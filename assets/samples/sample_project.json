@@ -1,0 +1,286 @@
+{
+  "version": 1,
+  "map_size_m": 15360.0,
+  "easting_offset": 200000.0,
+  "northing_offset": 0.0,
+  "seed": 20260821,
+  "spacing_multiplier": 1.0,
+  "clearing_scale_m": 420.0,
+  "clearing_strength": 0.35,
+  "min_altitude": 35.0,
+  "max_altitude": null,
+  "max_slope_deg": 32.0,
+  "edge_padding_m": 24.0,
+  "color_tolerance": 12,
+  "exclusion_colors": [
+    [
+      0,
+      90,
+      255
+    ],
+    [
+      25,
+      25,
+      25
+    ]
+  ],
+  "elevation_mode": "relative_zero",
+  "species": [
+    {
+      "label": "Brzoza młoda",
+      "model": "t_BetulaPendula_1s",
+      "scale_min": 0.85,
+      "scale_max": 1.15,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Brzoza",
+      "model": "t_BetulaPendula_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.15,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Brzoza wysoka",
+      "model": "t_BetulaPendula_3f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Dąb młody",
+      "model": "t_quercusRobur_1f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Dąb",
+      "model": "t_quercusRobur_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Dąb wysoki",
+      "model": "t_quercusRobur_3f",
+      "scale_min": 0.95,
+      "scale_max": 1.05,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Buk",
+      "model": "t_FagusSylvatica_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Buk wysoki",
+      "model": "t_FagusSylvatica_3f",
+      "scale_min": 0.95,
+      "scale_max": 1.05,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Jesion",
+      "model": "t_FraxinusExcelsior_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Modrzew",
+      "model": "t_LarixDecidua_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Robinia (akacja)",
+      "model": "t_robiniaPseudoacacia_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Świerk młody",
+      "model": "t_PiceaAbies_1s",
+      "scale_min": 0.85,
+      "scale_max": 1.15,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Świerk",
+      "model": "t_PiceaAbies_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.15,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Świerk wysoki",
+      "model": "t_PiceaAbies_3f",
+      "scale_min": 0.95,
+      "scale_max": 1.05,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Sosna młoda",
+      "model": "t_PinusSylvestris_1s",
+      "scale_min": 0.85,
+      "scale_max": 1.15,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Sosna",
+      "model": "t_PinusSylvestris_2f",
+      "scale_min": 0.9,
+      "scale_max": 1.15,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Sosna wysoka",
+      "model": "t_PinusSylvestris_3f",
+      "scale_min": 0.95,
+      "scale_max": 1.05,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Leszczyna",
+      "model": "b_corylusAvellana_2s",
+      "scale_min": 0.85,
+      "scale_max": 1.2,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Bez czarny",
+      "model": "b_sambucusNigra_2s",
+      "scale_min": 0.85,
+      "scale_max": 1.2,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Róża dzika",
+      "model": "b_rosaCanina_2s",
+      "scale_min": 0.85,
+      "scale_max": 1.2,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Tarnina",
+      "model": "b_prunusSpinosa_2s",
+      "scale_min": 0.85,
+      "scale_max": 1.2,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Głóg",
+      "model": "b_crataegusLaevigata_2s",
+      "scale_min": 0.85,
+      "scale_max": 1.2,
+      "tilt_max_deg": 2.0
+    },
+    {
+      "label": "Brzoza karłowata",
+      "model": "b_betulaHumilis_1s",
+      "scale_min": 0.85,
+      "scale_max": 1.2,
+      "tilt_max_deg": 2.0
+    }
+  ],
+  "zones": [
+    {
+      "color": [
+        0,
+        120,
+        60
+      ],
+      "label": "Las iglasty",
+      "density_per_ha": 150.0,
+      "species_weights": [
+        [
+          13,
+          5.0
+        ],
+        [
+          12,
+          3.0
+        ],
+        [
+          16,
+          2.0
+        ],
+        [
+          11,
+          2.0
+        ],
+        [
+          17,
+          1.0
+        ]
+      ]
+    },
+    {
+      "color": [
+        0,
+        220,
+        80
+      ],
+      "label": "Las mieszany",
+      "density_per_ha": 110.0,
+      "species_weights": [
+        [
+          1,
+          3.0
+        ],
+        [
+          4,
+          2.0
+        ],
+        [
+          12,
+          2.0
+        ],
+        [
+          6,
+          1.0
+        ],
+        [
+          18,
+          1.0
+        ]
+      ]
+    }
+  ],
+  "use_mask_zones": true,
+  "use_areas": true,
+  "areas": [],
+  "edges": {
+    "enabled": true,
+    "band_width_m": 18.0,
+    "density_per_ha": 140.0,
+    "species_weights": [
+      [
+        17,
+        3.0
+      ],
+      [
+        19,
+        3.0
+      ],
+      [
+        18,
+        2.0
+      ],
+      [
+        20,
+        1.0
+      ]
+    ]
+  },
+  "paths": {
+    "mask": "assets/samples\\sample_mask.png",
+    "heightmap_asc": "assets/samples\\sample_heightmap.asc",
+    "exclusions_geojson": "assets/samples\\sample_exclusions.geojson"
+  }
+}

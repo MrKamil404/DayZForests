@@ -1,0 +1,8 @@
+[package]
+name = "forest-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+forest-core = { path = "../forest-core" }
+serde_json = { workspace = true }

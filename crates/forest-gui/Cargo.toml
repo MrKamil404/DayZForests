@@ -1,0 +1,10 @@
+[package]
+name = "forest-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+forest-core = { path = "../forest-core" }
+eframe = "0.27"
+rfd = "0.12"
+serde_json = { workspace = true }
