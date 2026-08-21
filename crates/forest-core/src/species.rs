@@ -19,6 +19,9 @@ pub struct SpeciesDef {
     pub scale_max: f32,
     /// Maksymalny losowy przechył pitch/roll w stopniach.
     pub tilt_max_deg: f32,
+    /// Grupa (do pogrupowanego widoku w UI), np. "Liściaste".
+    #[serde(default)]
+    pub group: String,
 }
 
 impl SpeciesDef {
@@ -29,6 +32,14 @@ impl SpeciesDef {
             scale_min,
             scale_max,
             tilt_max_deg: 2.0,
+            group: String::new(),
+        }
+    }
+
+    pub fn grouped(label: &str, model: &str, smin: f32, smax: f32, group: &str) -> Self {
+        Self {
+            group: group.to_string(),
+            ..Self::new(label, model, smin, smax)
         }
     }
 }
@@ -40,64 +51,142 @@ impl SpeciesDef {
 /// UWAGA: indeksy z tej listy są używane przez `zone_presets()` — dodając
 /// nowe gatunki, dopisz je na końcu, żeby nie przesunąć istniejących.
 pub fn vanilla_library() -> Vec<SpeciesDef> {
+    const L: &str = "Liściaste";
+    const I: &str = "Iglaste";
+    const K: &str = "Krzewy";
+    const B: &str = "Bliss (lato)";
+    const S: &str = "Sakhal (zima/mrok)";
+
     let mut v = Vec::new();
-    let mut t = |label: &str, model: &str, smin: f32, smax: f32| {
-        v.push(SpeciesDef::new(label, model, smin, smax));
+    // UWAGA: indeksy 0..=22 są używane przez zone_presets() — nie zmieniaj
+    // kolejności istniejących wpisów, nowe dopisuj na końcu.
+    let mut t = |label: &str, model: &str, smin: f32, smax: f32, group: &str| {
+        v.push(SpeciesDef::grouped(label, model, smin, smax, group));
     };
 
     // --- drzewa liściaste (dz\plants\tree) ---
-    t("Brzoza młoda", "t_BetulaPendula_1s", 0.85, 1.15);
-    t("Brzoza", "t_BetulaPendula_2f", 0.9, 1.15);
-    t("Brzoza wysoka", "t_BetulaPendula_3f", 0.9, 1.1);
-    t("Dąb młody", "t_quercusRobur_1f", 0.9, 1.1);
-    t("Dąb", "t_quercusRobur_2f", 0.9, 1.1);
-    t("Dąb wysoki", "t_quercusRobur_3f", 0.95, 1.05);
-    t("Buk", "t_FagusSylvatica_2f", 0.9, 1.1);
-    t("Buk wysoki", "t_FagusSylvatica_3f", 0.95, 1.05);
-    t("Jesion", "t_FraxinusExcelsior_2f", 0.9, 1.1);
-    t("Modrzew", "t_LarixDecidua_2f", 0.9, 1.1);
-    t("Robinia (akacja)", "t_robiniaPseudoacacia_2f", 0.9, 1.1);
+    t("Brzoza młoda", "t_BetulaPendula_1s", 0.85, 1.15, L);
+    t("Brzoza", "t_BetulaPendula_2f", 0.9, 1.15, L);
+    t("Brzoza wysoka", "t_BetulaPendula_3f", 0.9, 1.1, L);
+    t("Dąb młody", "t_quercusRobur_1f", 0.9, 1.1, L);
+    t("Dąb", "t_quercusRobur_2f", 0.9, 1.1, L);
+    t("Dąb wysoki", "t_quercusRobur_3f", 0.95, 1.05, L);
+    t("Buk", "t_FagusSylvatica_2f", 0.9, 1.1, L);
+    t("Buk wysoki", "t_FagusSylvatica_3f", 0.95, 1.05, L);
+    t("Jesion", "t_FraxinusExcelsior_2f", 0.9, 1.1, L);
+    t("Modrzew", "t_LarixDecidua_2f", 0.9, 1.1, I);
+    t("Robinia (akacja)", "t_robiniaPseudoacacia_2f", 0.9, 1.1, L);
 
-    // --- drzewa iglaste (dz\plants\tree) ---
-    t("Świerk młody", "t_PiceaAbies_1s", 0.85, 1.15);
-    t("Świerk", "t_PiceaAbies_2f", 0.9, 1.15);
-    t("Świerk wysoki", "t_PiceaAbies_3f", 0.95, 1.05);
-    t("Sosna młoda", "t_PinusSylvestris_1s", 0.85, 1.15);
-    t("Sosna", "t_PinusSylvestris_2f", 0.9, 1.15);
-    t("Sosna wysoka", "t_PinusSylvestris_3f", 0.95, 1.05);
+    // --- drzewa iglaste ---
+    t("Świerk młody", "t_PiceaAbies_1s", 0.85, 1.15, I);
+    t("Świerk", "t_PiceaAbies_2f", 0.9, 1.15, I);
+    t("Świerk wysoki", "t_PiceaAbies_3f", 0.95, 1.05, I);
+    t("Sosna młoda", "t_PinusSylvestris_1s", 0.85, 1.15, I);
+    t("Sosna", "t_PinusSylvestris_2f", 0.9, 1.15, I);
+    t("Sosna wysoka", "t_PinusSylvestris_3f", 0.95, 1.05, I);
 
     // --- krzewy (dz\plants\bush) ---
-    t("Leszczyna", "b_corylusAvellana_2s", 0.85, 1.2);
-    t("Bez czarny", "b_sambucusNigra_2s", 0.85, 1.2);
-    t("Róża dzika", "b_rosaCanina_2s", 0.85, 1.2);
-    t("Tarnina", "b_prunusSpinosa_2s", 0.85, 1.2);
-    t("Głóg", "b_crataegusLaevigata_2s", 0.85, 1.2);
-    t("Brzoza karłowata", "b_betulaHumilis_1s", 0.85, 1.2);
+    t("Leszczyna", "b_corylusAvellana_2s", 0.85, 1.2, K);
+    t("Bez czarny", "b_sambucusNigra_2s", 0.85, 1.2, K);
+    t("Róża dzika", "b_rosaCanina_2s", 0.85, 1.2, K);
+    t("Tarnina", "b_prunusSpinosa_2s", 0.85, 1.2, K);
+    t("Głóg", "b_crataegusLaevigata_2s", 0.85, 1.2, K);
+    t("Brzoza karłowata", "b_betulaHumilis_1s", 0.85, 1.2, K);
+
+    // --- Bliss / Livonia — warianty letnie (dz\plants_bliss) ---
+    t("Klon", "t_acer_2s_summer", 0.9, 1.1, B);
+    t("Brzoza E młoda", "t_BetulaPendulaE_1s_summer", 0.85, 1.15, B);
+    t("Brzoza E", "t_BetulaPendulaE_2f_summer", 0.9, 1.15, B);
+    t("Brzoza E wysoka", "t_BetulaPendulaE_3f_summer", 0.9, 1.1, B);
+    t("Karagana", "b_caraganaArborescens_2s_summer", 0.85, 1.2, B);
+    t("Leszczyna syberyjska", "b_corylusHeterophylla_2s_summer", 0.85, 1.2, B);
+    t("Trzcina", "b_phragmitesAustralis_summer", 0.8, 1.3, B);
+    t("Orzech włoski", "t_juglansRegia_3s_summer", 0.9, 1.1, B);
+    t("Jabłoń dzika", "t_malusDomestica_3s_summer", 0.85, 1.15, B);
+    t("Grusza dzika", "t_pyrusCommunis_3s_summer", 0.85, 1.15, B);
+    t("Wierzba biała", "t_salixAlba_2sb_summer", 0.9, 1.15, B);
+    t("Jarzębina", "t_sorbus_2s_summer", 0.85, 1.15, B);
+    t("Topola czarna", "t_populusNigra_3sb_summer", 0.9, 1.1, B);
+
+    // --- Sakhal — warianty mroczne/zimowe/jesienne (dz\plants_sakhal) ---
+    t("Świerk mroczny młody", "t_PiceaAbies_1s_dark", 0.85, 1.15, S);
+    t("Świerk mroczny", "t_PiceaAbies_2f_dark", 0.9, 1.15, S);
+    t("Świerk zamrożony młody", "t_PiceaAbies_1s_frozen", 0.85, 1.15, S);
+    t("Świerk zamrożony", "t_PiceaAbies_2f_frozen", 0.9, 1.15, S);
+    t("Brzoza zimowa", "t_BetulaPendula_2f_winter", 0.9, 1.15, S);
+    t("Brzoza zimowa wysoka", "t_BetulaPendula_3f_winter", 0.9, 1.1, S);
+    t("Brzoza jesienna", "t_BetulaPendula_2f_latefall", 0.9, 1.15, S);
+    t("Topola biała (jesień)", "t_populusAlba_2s_latefall", 0.9, 1.15, S);
 
     v
 }
 
-/// Skanuje P:\DZ\plants\{tree,bush} i zwraca zestaw nazw modeli (bez .p3d,
-/// z zachowaną wielkością liter jak na dysku). Błąd, gdy workdrive nie jest
-/// zamontowany albo brak katalogów.
+/// Skanuje katalogi roślinności na P:\ i zwraca zestaw nazw modeli (bez .p3d,
+/// z zachowaną wielkością liter jak na dysku). Obejmuje:
+/// - P:\DZ\plants\tree + bush (Chernarus),
+/// - P:\DZ\plants_bliss (Livonia/Bliss, warianty letnie),
+/// - P:\DZ\plants_sakhal (Sakhal, mrok/zima/jesień).
+/// Błąd, gdy workdrive nie jest zamontowany.
 pub fn game_plant_models() -> Result<std::collections::HashSet<String>, String> {
     use std::collections::HashSet;
-    let mut out = HashSet::new();
-    let mut any = false;
-    for dir in ["P:\\DZ\\plants\\tree", "P:\\DZ\\plants\\bush"] {
+
+    fn scan_flat(dir: &str, out: &mut HashSet<String>) -> Result<(), String> {
         let rd = std::fs::read_dir(dir)
             .map_err(|e| format!("Nie mogę otworzyć {dir}: {e} (czy P:\\ jest zamontowany?)"))?;
         for entry in rd.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if let Some(stem) = name.strip_suffix(".p3d") {
-                out.insert(stem.to_string());
-                any = true;
+                if stem.starts_with("t_") || stem.starts_with("b_") {
+                    out.insert(stem.to_string());
+                }
             }
         }
+        Ok(())
     }
-    if !any {
-        return Err("W P:\\DZ\\plants nie znaleziono żadnych .p3d".into());
+
+    fn scan_recursive(dir: &str, out: &mut HashSet<String>) -> Result<(), String> {
+        let rd = std::fs::read_dir(dir)
+            .map_err(|e| format!("Nie mogę otworzyć {dir}: {e}"))?;
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan_recursive(&path.to_string_lossy(), out)?;
+            } else if let Some(stem) = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .and_then(|n| n.strip_suffix(".p3d").map(|s| s.to_string()))
+            {
+                let low = stem.to_lowercase();
+                if low.starts_with("t_") || low.starts_with("b_") {
+                    out.insert(stem);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let mut out = HashSet::new();
+    let mut any = false;
+    for dir in [
+        "P:\\DZ\\plants\\tree",
+        "P:\\DZ\\plants\\bush",
+    ] {
+        scan_flat(dir, &mut out)?;
+        any = true;
+    }
+    for root in [
+        "P:\\DZ\\plants_bliss",
+        "P:\\DZ\\plants_sakhal",
+        "P:\\DZ\\plants\\clutter",
+    ] {
+        if std::path::Path::new(root).exists() {
+            scan_recursive(root, &mut out)?;
+            any = true;
+        }
+    }
+    if !any || out.is_empty() {
+        return Err("W P:\\DZ\\plants* nie znaleziono żadnych modeli t_/b_".into());
     }
     Ok(out)
 }

@@ -744,7 +744,13 @@ impl eframe::App for ForestApp {
                 });
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+ 
+        egui::SidePanel::right("presety_warstwy")
+            .resizable(true)
+            .default_width(370.0)
+            .show(ctx, |ui| {
+                self.ui_presets_layers(ui);
+            });       egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_toolbar(ui);
             self.ui_canvas(ui);
         });
@@ -965,6 +971,336 @@ impl ForestApp {
                     self.project.spacing_multiplier,
                     self.project.clearing_strength * 100.0
                 ));
+            });
+
+        // Granica lasu (krzewy/podrost)
+        CollapsingHeader::new("🧱 Granica lasu")
+            .default_open(false)
+            .show(ui, |ui| {
+                let e = &mut self.project.edges;
+                ui.checkbox(&mut e.enabled, "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)");
+                ui.add_enabled_ui(e.enabled, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Szerokość pasa [m]:");
+                        ui.add(
+                            egui::DragValue::new(&mut e.band_width_m)
+                                .speed(1.0)
+                                .clamp_range(1.0..=300.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Gęstość [szt/ha]:");
+                        ui.add(
+                            egui::DragValue::new(&mut e.density_per_ha)
+                                .speed(1.0)
+                                .clamp_range(1.0..=5000.0),
+                        );
+                    });
+                    ui.checkbox(&mut e.blend, "Wtapianie pasa")
+                        .on_hover_text("Gęstość zanika wraz z odległością od granicy \
+                                        (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków");
+                    ui.horizontal(|ui| {
+                        ui.label("Poszarpanie granicy [m]:")
+                            .on_hover_text("Szum przesuwający linię lasu — brzeg nie jest \
+                                            równy jak od linijki. Dotyczy też obrysów poligonów.");
+                        ui.add(
+                            egui::DragValue::new(&mut e.jagged_m)
+                                .speed(1.0)
+                                .clamp_range(0.0..=200.0),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Wtapianie w las [m]:")
+                            .on_hover_text("Jak głęboko od krawędzi gęstość drzew narasta \
+                                            0 -> pełna. Otwarte, naturalne obrzeża lasu.");
+                        ui.add(
+                            egui::DragValue::new(&mut e.blend_inside_m)
+                                .speed(1.0)
+                                .clamp_range(0.0..=500.0),
+                        );
+                    });
+                    ui.small("Wagi gatunków granicy:");
+                    let n_species = self.project.species.len();
+                    for si in 0..n_species {
+                        let sp = &self.project.species[si];
+                        let c = species_preview_color(si);
+                        ui.horizontal(|ui| {
+                            let (_r, resp) =
+                                ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                            ui.painter_at(resp.rect).circle_filled(
+                                resp.rect.center(),
+                                4.0,
+                                Color32::from_rgb(c[0], c[1], c[2]),
+                            );
+                            ui.label(sp.label.as_str());
+                            let pos = e.species_weights.iter().position(|(i, _)| *i == si);
+                            let mut w = pos.map_or(0.0, |p_| e.species_weights[p_].1);
+                            let before = w;
+                            ui.add(
+                                egui::DragValue::new(&mut w)
+                                    .speed(0.05)
+                                    .clamp_range(0.0..=20.0),
+                            );
+                            if (w - before).abs() > f32::EPSILON {
+                                match pos {
+                                    Some(p_) => {
+                                        if w <= 0.0 {
+                                            e.species_weights.remove(p_);
+                                        } else {
+                                            e.species_weights[p_].1 = w;
+                                        }
+                                    }
+                                    None => {
+                                        if w > 0.0 {
+                                            e.species_weights.push((si, w));
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+
+        // Filtry
+        CollapsingHeader::new("⛰ Filtry środowiskowe")
+            .default_open(false)
+            .show(ui, |ui| {
+                let p = &mut self.project;
+                opt_f64(ui, "Min. wysokość [m]", &mut p.min_altitude, -1.0..=8000.0);
+                opt_f64(ui, "Maks. wysokość [m]", &mut p.max_altitude, -1.0..=8000.0);
+                opt_f64(ui, "Maks. spadek [°]", &mut p.max_slope_deg, 0.0..=90.0);
+                ui.horizontal(|ui| {
+                    ui.label("Tolerancja koloru:");
+                    ui.add(egui::DragValue::new(&mut p.color_tolerance).clamp_range(0..=255));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Margines krawędzi [m]:");
+                    ui.add(egui::DragValue::new(&mut p.edge_padding_m).speed(1.0).clamp_range(0.0..=1000.0));
+                });
+                ui.separator();
+                ui.small("Kolory wykluczone (np. drogi/woda):");
+                let mut remove: Option<usize> = None;
+                for (i, c) in p.exclusion_colors.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let [r, g, b] = c.0;
+                        let (_rect, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                        ui.painter_at(resp.rect).rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
+                        ui.label(format!("#{:02X}{:02X}{:02X}", r, g, b));
+                        if ui.button("✖").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    p.exclusion_colors.remove(i);
+                }
+                if self.mask.is_some() {
+                    match &self.histogram {
+                        None => {
+                            ui.small("Analizuję kolory maski...");
+                        }
+                        Some(hist) => {
+                            let cands: Vec<(Rgb8, usize)> = hist
+                                .iter()
+                                .filter(|(c, _)| {
+                                    !p.exclusion_colors.contains(c)
+                                        && !p.zones.iter().any(|z| z.color == *c)
+                                })
+                                .take(24)
+                                .cloned()
+                                .collect();
+                            if cands.is_empty() {
+                                ui.small("Brak nowych kolorów do wykluczenia.");
+                            } else {
+                                ScrollArea::vertical()
+                                    .max_height(140.0)
+                                    .id_source("excl_colors")
+                                    .show(ui, |ui| {
+                                        for (c, n) in cands {
+                                            let [r, g, b] = c.0;
+                                            ui.horizontal(|ui| {
+                                                let (_rect, resp) = ui.allocate_exact_size(
+                                                    Vec2::splat(16.0),
+                                                    Sense::click(),
+                                                );
+                                                ui.painter_at(resp.rect).rect_filled(
+                                                    resp.rect,
+                                                    2.0,
+                                                    Color32::from_rgb(r, g, b),
+                                                );
+                                                ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+                                                ui.weak(format!("{n} px"));
+                                                if ui.button("+ Wyklucz").clicked() {
+                                                    p.exclusion_colors.push(c);
+                                                }
+                                            });
+                                        }
+                                    });
+                            }
+                        }
+                    }
+                }
+            });
+
+        // Rozrzut
+        CollapsingHeader::new("🎲 Rozrzut / polany")
+            .default_open(false)
+            .show(ui, |ui| {
+                let p = &mut self.project;
+                ui.horizontal(|ui| {
+                    ui.label("Mnożnik odstępów:")
+                        .on_hover_text(">1 = rzadszy las");
+                    ui.add(egui::DragValue::new(&mut p.spacing_multiplier).speed(0.02).clamp_range(0.05..=5.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Skala polan [m]:")
+                        .on_hover_text("Długość fali szumu polan; 0 = wyłączone");
+                    ui.add(egui::DragValue::new(&mut p.clearing_scale_m).speed(5.0).clamp_range(0.0..=5000.0));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Siła polan:")
+                        .on_hover_text("Jaka część obszaru ma być prześwitem");
+                    ui.add(egui::Slider::new(&mut p.clearing_strength, 0.0..=0.9));
+                });
+            });
+
+        // Gatunki
+        CollapsingHeader::new("🌳 Gatunki")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("🔍 Sprawdź modele na P:\\")
+                        .on_hover_text("Porównaj modele z plikami gry (P:\\DZ\\plants). \
+                                        Terrain Builder odrzuci import, gdy jakiegokolwiek \
+                                        brakuje w Template Library.")
+                        .clicked()
+                    {
+                        match forest_core::species::game_plant_models() {
+                            Ok(available) => {
+                                let missing =
+                                    forest_core::species::missing_in_game(&self.project.species, &available);
+                                if missing.is_empty() {
+                                    self.info = Some(
+                                        "✓ Wszystkie modele istnieją w grze (P:\\DZ\\plants).".into(),
+                                    );
+                                    self.error = None;
+                                } else {
+                                    self.error = Some(format!(
+                                        "Brakujące modele (TB odrzuci import): {}",
+                                        missing.join(", ")
+                                    ));
+                                    self.info = None;
+                                }
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    ui.small("TB wymaga wpisu w Template Library dla każdego modelu.");
+                });
+                ui.separator();
+                let mut remove: Option<usize> = None;
+                let mut last_group = String::new();
+                for (i, sp) in self.project.species.iter_mut().enumerate() {
+                    // nagłówek grupy (puste pole grupy -> "Inne")
+                    let group_label = if sp.group.is_empty() {
+                        "Inne".to_string()
+                    } else {
+                        sp.group.clone()
+                    };
+                    if group_label != last_group {
+                        ui.separator();
+                        ui.strong(group_label.clone());
+                        last_group = group_label;
+                    }
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            let c = species_preview_color(i);
+                            let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                            ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, Color32::from_rgb(c[0], c[1], c[2]));
+                            ui.text_edit_singleline(&mut sp.label);
+                            if ui.button("✖").on_hover_text("Usuń gatunek").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Model TB:");
+                            ui.text_edit_singleline(&mut sp.model);
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Skala:");
+                            ui.add(egui::DragValue::new(&mut sp.scale_min).speed(0.01).clamp_range(0.1..=5.0));
+                            ui.label("..");
+                            ui.add(egui::DragValue::new(&mut sp.scale_max).speed(0.01).clamp_range(0.1..=5.0));
+                            ui.label("Przechył [°]:");
+                            ui.add(egui::DragValue::new(&mut sp.tilt_max_deg).speed(0.1).clamp_range(0.0..=45.0));
+                        });
+                    });
+                }
+                if let Some(i) = remove {
+                    self.project.species.remove(i);
+                    for z in &mut self.project.zones {
+                        z.species_weights.retain(|(si, _)| *si != i);
+                        for (si, _) in z.species_weights.iter_mut() {
+                            if *si > i {
+                                *si -= 1;
+                            }
+                        }
+                    }
+                }
+                if ui.button("+ Dodaj gatunek").clicked() {
+                    self.project
+                        .species
+                        .push(forest_core::species::SpeciesDef::new("Nowy", "model_1f", 0.9, 1.1));
+                    for z in &mut self.project.zones {
+                        z.species_weights.push((self.project.species.len() - 1, 1.0));
+                    }
+                }
+            });
+    }
+
+
+    // --- prawy panel: presety i wygenerowane warstwy ----------------------------
+
+    fn ui_presets_layers(&mut self, ui: &mut egui::Ui) {
+        ScrollArea::vertical().show(ui, |ui| {
+        // 📊 Wynik generowania
+        CollapsingHeader::new("📊 Wygenerowane warstwy")
+            .default_open(true)
+            .show(ui, |ui| {
+                match &self.stats {
+                    Some(s) => {
+                        ui.label(format!(
+                            "Razem: {} obiektów | granica: {} | {} ms",
+                            s.total, s.edge_count, s.elapsed_ms
+                        ));
+                        ui.separator();
+                        if s.per_source.is_empty() {
+                            ui.small("(brak źródeł)");
+                        }
+                        for (n, cnt) in &s.per_source {
+                            ui.horizontal(|ui| {
+                                ui.label(n.as_str());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.monospace(format!("{cnt}"));
+                                });
+                            });
+                        }
+                        let rej = s.rejected_spacing + s.rejected_filters + s.rejected_exclusion + s.rejected_clearing;
+                        if rej > 0 {
+                            ui.separator();
+                            ui.small(format!(
+                                "Odrzucone: {rej} (odstęp {}, filtry {}, wykluczenia {}, polany {})",
+                                s.rejected_spacing, s.rejected_filters,
+                                s.rejected_exclusion, s.rejected_clearing
+                            ));
+                        }
+                    }
+                    None => {
+                        ui.small("Brak wyników — kliknij „▶ Generuj”. Po generowaniu tutaj pojawią się warstwy.");
+                    }
+                }
             });
 
         // Strefy
@@ -1195,6 +1531,7 @@ impl ForestApp {
                 }
             });
 
+
         // Moje presety — edytowalne szablony stref (zapisywane do JSON)
         CollapsingHeader::new("📚 Moje presety")
             .default_open(false)
@@ -1363,6 +1700,7 @@ impl ForestApp {
                 }
             });
 
+
         // Obszary rysowane (poligony) — alternatywa dla maski
         CollapsingHeader::new("📐 Obszary (poligony)")
             .default_open(false)
@@ -1438,272 +1776,9 @@ impl ForestApp {
                 }
             });
 
-        // Granica lasu (krzewy/podrost)
-        CollapsingHeader::new("🧱 Granica lasu")
-            .default_open(false)
-            .show(ui, |ui| {
-                let e = &mut self.project.edges;
-                ui.checkbox(&mut e.enabled, "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)");
-                ui.add_enabled_ui(e.enabled, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Szerokość pasa [m]:");
-                        ui.add(
-                            egui::DragValue::new(&mut e.band_width_m)
-                                .speed(1.0)
-                                .clamp_range(1.0..=300.0),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Gęstość [szt/ha]:");
-                        ui.add(
-                            egui::DragValue::new(&mut e.density_per_ha)
-                                .speed(1.0)
-                                .clamp_range(1.0..=5000.0),
-                        );
-                    });
-                    ui.checkbox(&mut e.blend, "Wtapianie pasa")
-                        .on_hover_text("Gęstość zanika wraz z odległością od granicy \
-                                        (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków");
-                    ui.horizontal(|ui| {
-                        ui.label("Poszarpanie granicy [m]:")
-                            .on_hover_text("Szum przesuwający linię lasu — brzeg nie jest \
-                                            równy jak od linijki. Dotyczy też obrysów poligonów.");
-                        ui.add(
-                            egui::DragValue::new(&mut e.jagged_m)
-                                .speed(1.0)
-                                .clamp_range(0.0..=200.0),
-                        );
-                    });
-                    ui.small("Wagi gatunków granicy:");
-                    let n_species = self.project.species.len();
-                    for si in 0..n_species {
-                        let sp = &self.project.species[si];
-                        let c = species_preview_color(si);
-                        ui.horizontal(|ui| {
-                            let (_r, resp) =
-                                ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                            ui.painter_at(resp.rect).circle_filled(
-                                resp.rect.center(),
-                                4.0,
-                                Color32::from_rgb(c[0], c[1], c[2]),
-                            );
-                            ui.label(sp.label.as_str());
-                            let pos = e.species_weights.iter().position(|(i, _)| *i == si);
-                            let mut w = pos.map_or(0.0, |p_| e.species_weights[p_].1);
-                            let before = w;
-                            ui.add(
-                                egui::DragValue::new(&mut w)
-                                    .speed(0.05)
-                                    .clamp_range(0.0..=20.0),
-                            );
-                            if (w - before).abs() > f32::EPSILON {
-                                match pos {
-                                    Some(p_) => {
-                                        if w <= 0.0 {
-                                            e.species_weights.remove(p_);
-                                        } else {
-                                            e.species_weights[p_].1 = w;
-                                        }
-                                    }
-                                    None => {
-                                        if w > 0.0 {
-                                            e.species_weights.push((si, w));
-                                        }
-                                    }
-                                }
-                            }
-                        });
-                    }
-                });
-            });
 
-        // Filtry
-        CollapsingHeader::new("⛰ Filtry środowiskowe")
-            .default_open(false)
-            .show(ui, |ui| {
-                let p = &mut self.project;
-                opt_f64(ui, "Min. wysokość [m]", &mut p.min_altitude, -1.0..=8000.0);
-                opt_f64(ui, "Maks. wysokość [m]", &mut p.max_altitude, -1.0..=8000.0);
-                opt_f64(ui, "Maks. spadek [°]", &mut p.max_slope_deg, 0.0..=90.0);
-                ui.horizontal(|ui| {
-                    ui.label("Tolerancja koloru:");
-                    ui.add(egui::DragValue::new(&mut p.color_tolerance).clamp_range(0..=255));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Margines krawędzi [m]:");
-                    ui.add(egui::DragValue::new(&mut p.edge_padding_m).speed(1.0).clamp_range(0.0..=1000.0));
-                });
-                ui.separator();
-                ui.small("Kolory wykluczone (np. drogi/woda):");
-                let mut remove: Option<usize> = None;
-                for (i, c) in p.exclusion_colors.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let [r, g, b] = c.0;
-                        let (_rect, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                        ui.painter_at(resp.rect).rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
-                        ui.label(format!("#{:02X}{:02X}{:02X}", r, g, b));
-                        if ui.button("✖").clicked() {
-                            remove = Some(i);
-                        }
-                    });
-                }
-                if let Some(i) = remove {
-                    p.exclusion_colors.remove(i);
-                }
-                if self.mask.is_some() {
-                    match &self.histogram {
-                        None => {
-                            ui.small("Analizuję kolory maski...");
-                        }
-                        Some(hist) => {
-                            let cands: Vec<(Rgb8, usize)> = hist
-                                .iter()
-                                .filter(|(c, _)| {
-                                    !p.exclusion_colors.contains(c)
-                                        && !p.zones.iter().any(|z| z.color == *c)
-                                })
-                                .take(24)
-                                .cloned()
-                                .collect();
-                            if cands.is_empty() {
-                                ui.small("Brak nowych kolorów do wykluczenia.");
-                            } else {
-                                ScrollArea::vertical()
-                                    .max_height(140.0)
-                                    .id_source("excl_colors")
-                                    .show(ui, |ui| {
-                                        for (c, n) in cands {
-                                            let [r, g, b] = c.0;
-                                            ui.horizontal(|ui| {
-                                                let (_rect, resp) = ui.allocate_exact_size(
-                                                    Vec2::splat(16.0),
-                                                    Sense::click(),
-                                                );
-                                                ui.painter_at(resp.rect).rect_filled(
-                                                    resp.rect,
-                                                    2.0,
-                                                    Color32::from_rgb(r, g, b),
-                                                );
-                                                ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
-                                                ui.weak(format!("{n} px"));
-                                                if ui.button("+ Wyklucz").clicked() {
-                                                    p.exclusion_colors.push(c);
-                                                }
-                                            });
-                                        }
-                                    });
-                            }
-                        }
-                    }
-                }
-            });
-
-        // Rozrzut
-        CollapsingHeader::new("🎲 Rozrzut / polany")
-            .default_open(false)
-            .show(ui, |ui| {
-                let p = &mut self.project;
-                ui.horizontal(|ui| {
-                    ui.label("Mnożnik odstępów:")
-                        .on_hover_text(">1 = rzadszy las");
-                    ui.add(egui::DragValue::new(&mut p.spacing_multiplier).speed(0.02).clamp_range(0.05..=5.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Skala polan [m]:")
-                        .on_hover_text("Długość fali szumu polan; 0 = wyłączone");
-                    ui.add(egui::DragValue::new(&mut p.clearing_scale_m).speed(5.0).clamp_range(0.0..=5000.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Siła polan:")
-                        .on_hover_text("Jaka część obszaru ma być prześwitem");
-                    ui.add(egui::Slider::new(&mut p.clearing_strength, 0.0..=0.9));
-                });
-            });
-
-        // Gatunki
-        CollapsingHeader::new("🌳 Gatunki")
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .button("🔍 Sprawdź modele na P:\\")
-                        .on_hover_text("Porównaj modele z plikami gry (P:\\DZ\\plants). \
-                                        Terrain Builder odrzuci import, gdy jakiegokolwiek \
-                                        brakuje w Template Library.")
-                        .clicked()
-                    {
-                        match forest_core::species::game_plant_models() {
-                            Ok(available) => {
-                                let missing =
-                                    forest_core::species::missing_in_game(&self.project.species, &available);
-                                if missing.is_empty() {
-                                    self.info = Some(
-                                        "✓ Wszystkie modele istnieją w grze (P:\\DZ\\plants).".into(),
-                                    );
-                                    self.error = None;
-                                } else {
-                                    self.error = Some(format!(
-                                        "Brakujące modele (TB odrzuci import): {}",
-                                        missing.join(", ")
-                                    ));
-                                    self.info = None;
-                                }
-                            }
-                            Err(e) => self.error = Some(e),
-                        }
-                    }
-                    ui.small("TB wymaga wpisu w Template Library dla każdego modelu.");
-                });
-                ui.separator();
-                let mut remove: Option<usize> = None;
-                for (i, sp) in self.project.species.iter_mut().enumerate() {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            let c = species_preview_color(i);
-                            let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                            ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, Color32::from_rgb(c[0], c[1], c[2]));
-                            ui.text_edit_singleline(&mut sp.label);
-                            if ui.button("✖").on_hover_text("Usuń gatunek").clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Model TB:");
-                            ui.text_edit_singleline(&mut sp.model);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Skala:");
-                            ui.add(egui::DragValue::new(&mut sp.scale_min).speed(0.01).clamp_range(0.1..=5.0));
-                            ui.label("..");
-                            ui.add(egui::DragValue::new(&mut sp.scale_max).speed(0.01).clamp_range(0.1..=5.0));
-                            ui.label("Przechył [°]:");
-                            ui.add(egui::DragValue::new(&mut sp.tilt_max_deg).speed(0.1).clamp_range(0.0..=45.0));
-                        });
-                    });
-                }
-                if let Some(i) = remove {
-                    self.project.species.remove(i);
-                    for z in &mut self.project.zones {
-                        z.species_weights.retain(|(si, _)| *si != i);
-                        for (si, _) in z.species_weights.iter_mut() {
-                            if *si > i {
-                                *si -= 1;
-                            }
-                        }
-                    }
-                }
-                if ui.button("+ Dodaj gatunek").clicked() {
-                    self.project
-                        .species
-                        .push(forest_core::species::SpeciesDef::new("Nowy", "model_1f", 0.9, 1.1));
-                    for z in &mut self.project.zones {
-                        z.species_weights.push((self.project.species.len() - 1, 1.0));
-                    }
-                }
-            });
-    }
-
-    // --- kanvas -------------------------------------------------------------
+        });
+    }    // --- kanvas -------------------------------------------------------------
 
     fn ui_canvas(&mut self, ui: &mut egui::Ui) {
         if self.mask.is_none() && self.project.areas.is_empty() && !self.draw_mode {

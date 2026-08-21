@@ -37,6 +37,10 @@ Przykład: mapa 15 360 m, 2 strefy lasu, droga i jezioro wykluczone,
 
 ## GUI — przepływ pracy
 
+Układ okna: **lewy panel = ustawienia** (pliki, źródła, mapa, filtry, rozrzut,
+granica, gatunki), **prawy panel = presety i wygenerowane warstwy** (strefy,
+moje presety, obszary, wynik generowania ze statystyką per źródło).
+
 1. **Pliki** → wczytaj maskę PNG/BMP/TGA (kolory = strefy lasu).
    Opcjonalnie dołącz **podkład satelitarny** (PNG/JPG) — rysowany pod maską
    z regulowanym kryciem, przydatny jako odniesienie przy strojeniu stref.
@@ -62,7 +66,8 @@ Przykład: mapa 15 360 m, 2 strefy lasu, droga i jezioro wykluczone,
    **Wtapianie** — gęstość zanika z odległością od granicy (5 warstw,
    najgęściej przy samej krawędzi). **Poszarpanie [m]** — szum przesuwający
    efektywną linię lasu, dzięki czemu brzeg nie jest równy jak od linijki
-   (dotyczy też obrysów rysowanych poligonów).
+   (dotyczy też obrysów rysowanych poligonów). **Wtapianie w las [m]** —
+   jak głęboko od krawędzi gęstość drzew narasta 0 → pełna.
 4. **Filtry / Rozrzut** → min./maks. wysokość, maks. spadek, tolerancja koloru,
    mnożnik odstępów, skala i siła polan.
 5. **▶ Generuj** → podgląd punktów na masce (kolor = gatunek), statystyki.
@@ -102,9 +107,11 @@ options*, format rekordu **Terrain Builder**, a przy pytaniu o wysokość wybier
 
 **Ważne:** Terrain Builder odrzuca cały import (`Wrong file format or source
 template not found`), jeśli choć jednego modelu z pliku nie ma w Template
-Library. Wbudowana biblioteka zawiera wyłącznie nazwy zweryfikowane z
-P:\DZ\plants — przed importem użyj **🔍 Sprawdź modele na P:\\** (GUI,
-zakładka 🌳 Gatunki) albo `forest-cli check-models projekt.json`.
+Library. Wbudowana biblioteka (44 gatunki w grupach: Liściaste / Iglaste /
+Krzewy / Bliss / Sakhal) zawiera wyłącznie nazwy zweryfikowane z
+P:\DZ\plants, P:\DZ\plants_bliss i P:\DZ\plants_sakhal — przed importem użyj
+**🔍 Sprawdź modele na P:\\** (GUI, zakładka 🌳 Gatunki) albo
+`forest-cli check-models projekt.json`.
 
 ## CLI
 

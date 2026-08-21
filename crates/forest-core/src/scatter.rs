@@ -313,6 +313,108 @@ fn make_px_cand<'a>(
     }
 }
 
+/// Kandydat: losowy piksel zbioru + jitter, z bramką gęstości wg głębokości
+/// od krawędzi strefy (wtapianie w las). Głębokość spoza mapy = pełna gęstość.
+fn make_px_cand_blend<'a>(
+    set: &'a [u32],
+    width: u32,
+    size: f64,
+    ps: f64,
+    depth: &'a HashMap<u32, u8>,
+    blend_inside: f64,
+) -> impl FnMut(&mut StdRng) -> Option<(f64, f64)> + 'a {
+    move |rng: &mut StdRng| {
+        if set.is_empty() {
+            return None;
+        }
+        let idx = set[rng.gen_range(0..set.len())];
+        let px = (idx % width) as f64;
+        let row = (idx / width) as f64;
+        let wx = (px + 0.5 + rng.gen_range(-0.5..0.5)) * ps;
+        let wy = size - (row + 0.5 + rng.gen_range(-0.5..0.5)) * ps;
+
+        if blend_inside > 0.0 {
+            let d_px = depth.get(&idx).copied().unwrap_or(u8::MAX);
+            let s = f64::from(d_px) * ps;
+            if s < blend_inside {
+                let t = (s / blend_inside).clamp(0.0, 1.0);
+                if rng.gen::<f64>() > smoothstep(t) {
+                    return None;
+                }
+            }
+        }
+        Some((wx, wy))
+    }
+}
+
+/// Odległość każdego piksela strefy od najbliższej krawędzi tej strefy [piks],
+/// ograniczona do `max_px` (BFS wieloźródłowy per strefa).
+fn mask_edge_depth(
+    width: u32,
+    height: u32,
+    zone_id: &[u8],
+    max_px: usize,
+) -> HashMap<u32, u8> {
+    let mut dist: HashMap<u32, u8> = HashMap::new();
+    let mut frontier: Vec<u32> = Vec::new();
+    let w = width as usize;
+
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) as usize;
+            let c = zone_id[i];
+            if c == 255 {
+                continue;
+            }
+            let edge = x == 0
+                || y == 0
+                || x + 1 >= width
+                || y + 1 >= height
+                || zone_id[i - 1] != c
+                || zone_id[i + 1] != c
+                || zone_id[i - w] != c
+                || zone_id[i + w] != c;
+            if edge && dist.insert(i as u32, 0).is_none() {
+                frontier.push(i as u32);
+            }
+        }
+    }
+
+    for level in 0..max_px {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next = Vec::new();
+        for &idx in &frontier {
+            let x = idx % width;
+            let y = idx / width;
+            let ci = idx as usize;
+            let cz = zone_id[ci];
+            let mut neigh: [Option<usize>; 4] = [None; 4];
+            if x > 0 {
+                neigh[0] = Some(ci - 1);
+            }
+            if x + 1 < width {
+                neigh[1] = Some(ci + 1);
+            }
+            if y > 0 {
+                neigh[2] = Some(ci - w);
+            }
+            if y + 1 < height {
+                neigh[3] = Some(ci + w);
+            }
+            for n in neigh.into_iter().flatten() {
+                if zone_id[n] == cz && dist.insert(n as u32, (level + 1) as u8).is_none() {
+                    next.push(n as u32);
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    dist
+}
+
 // --- Pas graniczny na masce (dylatacja BFS po pikselach strefy) ----------------
 
 fn mask_edge_band(
@@ -577,6 +679,23 @@ pub fn generate(
     // kolejność deklaracji ma znaczenie: dane pożyczane przez domknięcia w jobs
     // muszą żyć dłużej (drop jest w odwrotnej kolejności)
     let mut edge_bands: Vec<(usize, Vec<(u32, u8)>)> = Vec::new();
+
+    // mapa głębokości od krawędzi (wtapianie pasa w głąb stref z maski)
+    let blend_inside = if project.edges.enabled {
+        project.edges.blend_inside_m.max(0.0)
+    } else {
+        0.0
+    };
+    let blend_depth: Option<HashMap<u32, u8>> = if blend_inside > 0.0 {
+        mask.map(|m| {
+            let max_px = ((blend_inside / ps).ceil() as usize).clamp(1, 255);
+            mask_edge_depth(m.width, m.height, &zone_id, max_px)
+        })
+    } else {
+        None
+    };
+    let use_blend_inside = project.edges.enabled && blend_inside > 0.0;
+
     let mut jobs: Vec<Job> = Vec::new();
     let mut max_min_dist = 1.0f64;
     let mut total_target = 0usize;
@@ -594,7 +713,18 @@ pub fn generate(
             let d = plan_min_dist(project.spacing_multiplier, area_m2, target);
             max_min_dist = max_min_dist.max(d);
             total_target += target;
-            let cand = make_px_cand(zp, mask.unwrap().width, size, ps);
+            let cand: Box<dyn FnMut(&mut StdRng) -> Option<(f64, f64)> + '_> =
+                match &blend_depth {
+                    Some(map) => Box::new(make_px_cand_blend(
+                        zp,
+                        mask.unwrap().width,
+                        size,
+                        ps,
+                        map,
+                        blend_inside,
+                    )),
+                    None => Box::new(make_px_cand(zp, mask.unwrap().width, size, ps)),
+                };
             jobs.push(Job {
                 label: zone.label.clone(),
                 target,
@@ -602,7 +732,7 @@ pub fn generate(
                 cum: cumulative(&zone.species_weights),
                 source_index: zi,
                 is_edge: false,
-                cand: Box::new(cand),
+                cand,
             });
         }
     }
@@ -650,6 +780,13 @@ pub fn generate(
                             let dist = point_ring_distance(x, y, &ring_c2);
                             let signed = if inside { dist } else { -dist };
                             if signed > wob(x, y) {
+                                // wtapianie w głąb: przy brzegu rzadsze drzewa
+                                if use_blend_inside && signed >= 0.0 && signed < blend_inside {
+                                    let t = (signed / blend_inside).clamp(0.0, 1.0);
+                                    if rng.gen::<f64>() > smoothstep(t) {
+                                        continue;
+                                    }
+                                }
                                 return Some((x, y));
                             }
                         }
@@ -1285,6 +1422,7 @@ mod tests {
             species_weights: vec![(1, 1.0)], // b_1f tylko granica
             blend: false,
             jagged_m: 0.0, // deterministyczny pas do testów odległości
+            blend_inside_m: 0.0,
         };
 
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
@@ -1345,6 +1483,7 @@ mod tests {
             species_weights: vec![(1, 1.0)],
             blend: false,
             jagged_m: 0.0,
+            blend_inside_m: 0.0,
         };
         let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
         assert!(stats.edge_count > 0);
@@ -1473,6 +1612,7 @@ mod tests {
             species_weights: vec![(1, 1.0)],
             blend: true,
             jagged_m: 0.0,
+            blend_inside_m: 0.0,
         };
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, _) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();

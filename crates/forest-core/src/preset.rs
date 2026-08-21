@@ -63,10 +63,18 @@ pub struct EdgeSettings {
     /// dzięki czemu brzeg nie jest równy jak od linijki. 0 = wyłączone.
     #[serde(default = "default_jagged")]
     pub jagged_m: f64,
+    /// Odległość wtapiania w głąb lasu [m]: gęstość drzew narasta 0 -> pełna
+    /// na tej głębokości od krawędzi (otwarte, naturalne obrzeża). 0 = wył.
+    #[serde(default = "default_blend_inside")]
+    pub blend_inside_m: f64,
 }
 
 fn default_jagged() -> f64 {
     25.0
+}
+
+fn default_blend_inside() -> f64 {
+    40.0
 }
 
 impl Default for EdgeSettings {
@@ -79,6 +87,7 @@ impl Default for EdgeSettings {
             species_weights: vec![(17, 3.0), (19, 3.0), (18, 2.0), (20, 1.0)],
             blend: true,
             jagged_m: 25.0,
+            blend_inside_m: 40.0,
         }
     }
 }

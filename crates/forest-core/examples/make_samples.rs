@@ -155,6 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             species_weights: vec![(17, 3.0), (19, 3.0), (18, 2.0), (20, 1.0)],
             blend: true,
             jagged_m: 30.0,
+            blend_inside_m: 45.0,
         },
         paths: ProjectPaths {
             mask: Some(mask_path.to_string_lossy().to_string()),
