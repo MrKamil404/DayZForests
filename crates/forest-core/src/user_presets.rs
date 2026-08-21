@@ -1,4 +1,4 @@
-//! Presety użytkownika — edytowalne kopie szablonów wbudowanych oraz własne
+﻿//! Presety użytkownika — edytowalne kopie szablonów wbudowanych oraz własne
 //! strefy lasów, zapisywane do pliku JSON obok programu.
 //!
 //! Wagi gatunków przechowywane są po NAZWIE MODELU (nie po indeksie), więc
@@ -88,6 +88,7 @@ impl UserPreset {
             label: self.name.clone(),
             density_per_ha: self.density_per_ha,
             species_weights: zw,
+            preset_mix: Vec::new(),
         })
     }
 }

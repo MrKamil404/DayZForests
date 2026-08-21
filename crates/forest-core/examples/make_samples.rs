@@ -135,6 +135,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // indeksy wg vanilla_library(): 13 świerk wys., 12 świerk, 16 sosna wys.,
                 // 11 świerk mł., 17 leszczyna
                 species_weights: vec![(13, 5.0), (12, 3.0), (16, 2.0), (11, 2.0), (17, 1.0)],
+                preset_mix: Vec::new(),
             },
             ZoneDef {
                 color: mixed,
@@ -142,6 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 density_per_ha: 110.0,
                 // 1 brzoza, 4 dąb, 12 świerk, 6 buk, 18 bez
                 species_weights: vec![(1, 3.0), (4, 2.0), (12, 2.0), (6, 1.0), (18, 1.0)],
+                preset_mix: Vec::new(),
             },
         ],
         areas: Vec::new(),
@@ -159,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         paths: ProjectPaths {
             mask: Some(mask_path.to_string_lossy().to_string()),
+            satellite: None,
             heightmap_asc: Some(asc_path.to_string_lossy().to_string()),
             exclusions_geojson: Some(gj_path.to_string_lossy().to_string()),
         },

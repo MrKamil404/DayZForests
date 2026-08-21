@@ -1162,6 +1162,7 @@ mod tests {
                 label: format!("Z{i}"),
                 density_per_ha: 300.0,
                 species_weights: vec![(0, 3.0), (1, 1.0)],
+                preset_mix: Vec::new(),
             })
             .collect();
         p
@@ -1365,6 +1366,7 @@ mod tests {
             density_per_ha: 200.0,
             species_weights: vec![(0, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
+            preset_mix: Vec::new(),
         });
         // 16 ha * 200/ha = 3200 celów
         let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
@@ -1388,6 +1390,7 @@ mod tests {
             density_per_ha: 150.0,
             species_weights: vec![(1, 1.0)], // model b_1f tylko z obszaru
             polygon: square_ring(350.0, 350.0, 650.0, 650.0),
+            preset_mix: Vec::new(),
         });
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
@@ -1475,6 +1478,7 @@ mod tests {
             density_per_ha: 150.0,
             species_weights: vec![(0, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
+            preset_mix: Vec::new(),
         });
         proj.edges = EdgeSettings {
             enabled: true,
@@ -1521,6 +1525,7 @@ mod tests {
             density_per_ha: 100.0,
             species_weights: vec![(0, 1.0)],
             polygon: vec![[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [0.0, 100.0]],
+            preset_mix: Vec::new(),
         });
         let err = proj.validate().unwrap_err();
         assert!(err.contains("przecina sam siebie"), "{err}");
@@ -1537,6 +1542,7 @@ mod tests {
             density_per_ha: 150.0,
             species_weights: vec![(1, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
+            preset_mix: Vec::new(),
         });
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
@@ -1570,6 +1576,7 @@ mod tests {
             density_per_ha: 200.0,
             species_weights: vec![(0, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
+            preset_mix: Vec::new(),
         });
         let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 1_000);

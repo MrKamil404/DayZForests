@@ -118,6 +118,21 @@ pub fn vanilla_library() -> Vec<SpeciesDef> {
     t("Brzoza jesienna", "t_BetulaPendula_2f_latefall", 0.9, 1.15, S);
     t("Topola biała (jesień)", "t_populusAlba_2s_latefall", 0.9, 1.15, S);
 
+    // --- Bliss — uzupełniające (dz\plants_bliss) ---
+    t("Buk młody (lato)", "t_FagusSylvatica_1s_summer", 0.85, 1.15, B);
+    t("Świerk krzewiasty (lato)", "b_PiceaAbies_1f_summer", 0.85, 1.2, B);
+    t("Modrzew młody (lato)", "t_LarixDecidua_1s_summer", 0.85, 1.15, B);
+    t("Sosna 1f (lato)", "t_PinusSylvestris_1f_summer", 0.85, 1.15, B);
+    t("Orzech włoski 2s", "t_juglansRegia_2s_summer", 0.85, 1.15, B);
+    t("Grusza dzika 2s", "t_pyrusCommunis_2s_summer", 0.85, 1.15, B);
+
+    // --- Sakhal — uzupełniające (dz\plants_sakhal) ---
+    t("Świerk krzewiasty mroczny", "b_PiceaAbies_1f_dark", 0.85, 1.2, S);
+    t("Świerk krzewiasty zamrożony", "b_PiceaAbies_1f_frozen", 0.85, 1.2, S);
+    t("Brzoza karłowata zimowa", "b_betulaNana_1s_winter", 0.85, 1.2, S);
+    t("Topola biała młoda (jesień)", "t_populusAlba_1f_latefall", 0.85, 1.15, S);
+    t("Karagana bezlistna", "b_caraganaArborescens_2s_leafless", 0.85, 1.2, S);
+
     v
 }
 
@@ -226,6 +241,7 @@ impl ZonePreset {
             label: self.name.to_string(),
             density_per_ha: self.density_per_ha,
             species_weights: self.weights.iter().map(|(i, w)| (*i, *w)).collect(),
+            preset_mix: Vec::new(),
         }
     }
 }

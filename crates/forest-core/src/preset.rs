@@ -1,4 +1,4 @@
-//! Konfiguracja projektu (serializowana do JSON) — most między GUI/CLI a silnikiem.
+﻿//! Konfiguracja projektu (serializowana do JSON) — most między GUI/CLI a silnikiem.
 
 use crate::mask::Rgb8;
 use crate::species::SpeciesDef;
@@ -22,6 +22,11 @@ pub struct ZoneDef {
     pub density_per_ha: f32,
     /// Wagi gatunków w strefie: (indeks do `species`, waga > 0).
     pub species_weights: Vec<(usize, f32)>,
+    /// Miks presetów: (nazwa presetu, udział 0..1]. Gdy niepuste —
+    /// gęstość/wagi są wynikiem zmieszania tych presetów proporcjonalnie
+    /// do udziałów (edytowalne w GUI; edycja ręczna wag czyści miks).
+    #[serde(default)]
+    pub preset_mix: Vec<(String, f32)>,
 }
 
 impl Default for ZoneDef {
@@ -31,6 +36,7 @@ impl Default for ZoneDef {
             label: "Strefa".into(),
             density_per_ha: 220.0,
             species_weights: Vec::new(),
+            preset_mix: Vec::new(),
         }
     }
 }
@@ -45,6 +51,9 @@ pub struct AreaDef {
     pub species_weights: Vec<(usize, f32)>,
     /// Pierścień poligonu, >= 3 punkty.
     pub polygon: Vec<[f64; 2]>,
+    /// Miks presetów jak w ZoneDef.
+    #[serde(default)]
+    pub preset_mix: Vec<(String, f32)>,
 }
 
 /// Pas graniczny lasu — krzewy/podrost sadzone wzdłuż krawędzi stref i obszarów.
@@ -100,6 +109,9 @@ fn default_true() -> bool {
 pub struct ProjectPaths {
     #[serde(default)]
     pub mask: Option<String>,
+    /// Podkład satelitarny (tylko podgląd, nie wpływa na generowanie).
+    #[serde(default)]
+    pub satellite: Option<String>,
     #[serde(default)]
     pub heightmap_asc: Option<String>,
     #[serde(default)]
@@ -207,9 +219,12 @@ impl ForestProject {
         }
         self.zones.retain(|z| !z.species_weights.is_empty());
         for a in &mut self.areas {
-            a.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
+            // obszary bez wag mogą czekać na przypisanie presetu — nie usuwamy
+            if !a.species_weights.is_empty() {
+                a.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
+            }
         }
-        self.areas.retain(|a| a.polygon.len() >= 3 && !a.species_weights.is_empty());
+        self.areas.retain(|a| a.polygon.len() >= 3);
         if self.edges.enabled {
             self.edges
                 .species_weights
@@ -245,6 +260,10 @@ impl ForestProject {
         for (ai, a) in self.areas.iter().enumerate() {
             if a.polygon.len() < 3 {
                 return Err(format!("Obszar {}: poligon wymaga >= 3 punktów", ai + 1));
+            }
+            // obszar nieskonfigurowany (bez presetu) — legalny, generuje 0 obiektów
+            if a.species_weights.is_empty() && a.density_per_ha <= 0.0 {
+                continue;
             }
             for (pi, pt) in a.polygon.iter().enumerate() {
                 if !pt[0].is_finite() || !pt[1].is_finite() {

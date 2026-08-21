@@ -1,4 +1,4 @@
-//! forest-gui — desktopowy generator lasów DayZ (egui/eframe).
+﻿//! forest-gui — desktopowy generator lasów DayZ (egui/eframe).
 
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,7 @@ use forest_core::export_tb::write_tb_file;
 use forest_core::geojson::GeoJsonData;
 use forest_core::heightmap::AscHeightmap;
 use forest_core::mask::{MaskImage, Rgb8};
-use forest_core::preset::{ElevationMode, ForestProject, ZoneDef};
+use forest_core::preset::{ElevationMode, EdgeSettings, ForestProject, ZoneDef};
 use forest_core::scatter::{generate, GenStats, PlacedObject};
 use forest_core::species::species_preview_color;
 use forest_core::user_presets::{UserPreset, UserPresetLibrary, DEFAULT_PRESETS_FILE};
@@ -67,7 +67,6 @@ struct ForestApp {
     // tryb rysowania poligonów (obszary)
     draw_mode: bool,
     draw_points: Vec<[f64; 2]>,
-    draw_preset: usize,
 
     /// Indeks strefy, której kolor jest właśnie edytowany.
     zone_color_edit: Option<usize>,
@@ -120,7 +119,6 @@ impl ForestApp {
             info: None,
             draw_mode: false,
             draw_points: Vec::new(),
-            draw_preset: 0,
             zone_color_edit: None,
             user_presets: Vec::new(),
             preset_edit_open: None,
@@ -164,6 +162,7 @@ impl ForestApp {
                 let tex = preview_texture(ctx, "satellite", &m, TextureOptions::LINEAR);
                 self.sat_tex = Some(tex);
                 self.show_sat = true;
+                self.project.paths.satellite = Some(path.to_string());
                 self.info = Some(format!(
                     "Wczytano podkład satelitarny: {path} ({}x{} px)",
                     m.width, m.height
@@ -338,9 +337,19 @@ impl ForestApp {
                 Ok(mut p) => {
                     p.sanitize();
                     self.project = p;
+                    // wyczyść stan z poprzedniego projektu, żeby pliki nowego
+                    // zawsze się przeładowały (nawet gdy ścieżki są inne)
+                    self.mask = None;
+                    self.mask_tex = None;
+                    self.sat_tex = None;
+                    self.heightmap = None;
+                    self.exclusions = None;
+                    self.histogram = None;
+                    self.hist_rx = None;
                     self.overlay_tex = None;
                     self.objects.clear();
                     self.stats = None;
+                    self.zone_color_edit = None;
                     self.info = Some(format!("Wczytano projekt: {}", path.display()));
                     self.reload_project_files(ctx);
                     self.error = None;
@@ -350,21 +359,36 @@ impl ForestApp {
         }
     }
 
-    /// Doczytuje maskę/ASC/GeoJSON wskazane przez projekt (jeśli istnieją).
+    /// Doczytuje maskę/podkład/ASC/GeoJSON wskazane przez projekt (jeśli istnieją).
     fn reload_project_files(&mut self, ctx: &egui::Context) {
         if let Some(m) = self.project.paths.mask.clone() {
-            if std::path::Path::new(&m).exists() && self.mask.is_none() {
+            if std::path::Path::new(&m).exists() {
                 self.load_mask(ctx, &m);
+            } else {
+                self.error = Some(format!("Plik maski nie istnieje: {m}"));
+            }
+        }
+        if let Some(s) = self.project.paths.satellite.clone() {
+            if std::path::Path::new(&s).exists() {
+                self.load_satellite(ctx, &s);
+            } else {
+                self.info = Some(format!(
+                    "Podkład satelitarny nie istnieje (pomijam): {s}"
+                ));
             }
         }
         if let Some(a) = self.project.paths.heightmap_asc.clone() {
-            if std::path::Path::new(&a).exists() && self.heightmap.is_none() {
+            if std::path::Path::new(&a).exists() {
                 self.load_heightmap(&a);
+            } else {
+                self.error = Some(format!("Plik heightmapy nie istnieje: {a}"));
             }
         }
         if let Some(g) = self.project.paths.exclusions_geojson.clone() {
-            if std::path::Path::new(&g).exists() && self.exclusions.is_none() {
+            if std::path::Path::new(&g).exists() {
                 self.load_exclusions(&g);
+            } else {
+                self.error = Some(format!("Plik wykluczeń nie istnieje: {g}"));
             }
         }
     }
@@ -376,6 +400,7 @@ impl ForestApp {
             label: format!("Strefa {}", self.project.zones.len() + 1),
             density_per_ha: 220.0,
             species_weights: (0..n_species).map(|i| (i, 1.0)).collect(),
+            preset_mix: Vec::new(),
         });
     }
 
@@ -442,44 +467,22 @@ impl ForestApp {
             );
             return;
         }
-        let Some(snap) = self.resolve_preset(self.draw_preset) else {
-            self.error = Some("Nieprawidłowy preset.".into());
-            return;
-        };
         let label = format!("Obszar {}", self.project.areas.len() + 1);
         let area_ha = forest_core::scatter::polygon_area_m2(&self.draw_points) / 10_000.0;
-        // mapowanie modeli na indeksy bieżącej listy gatunków
-        let mapped: Vec<(usize, f32)> = {
-            let species = &self.project.species;
-            snap.weights
-                .iter()
-                .filter_map(|(model, w)| {
-                    species
-                        .iter()
-                        .position(|s| s.model.eq_ignore_ascii_case(model))
-                        .map(|idx| (idx, *w))
-                })
-                .collect()
-        };
-        if mapped.is_empty() {
-            self.error = Some(format!(
-                "Preset '{}': żaden z jego modeli nie występuje na liście gatunków.",
-                snap.name
-            ));
-            return;
-        }
+        // obszar startuje nieskonfigurowany: 0 obiektów, dopóki nie dodasz
+        // presetów (🧩 Miks presetów) w panelu Obszary
         self.project.areas.push(forest_core::preset::AreaDef {
             label,
-            density_per_ha: snap.density_per_ha,
-            species_weights: mapped,
+            density_per_ha: 0.0,
+            species_weights: Vec::new(),
+            preset_mix: Vec::new(),
             polygon: std::mem::take(&mut self.draw_points),
         });
         self.info = Some(format!(
-            "Dodano obszar '{}' ({:.1} ha ≈ {} szt przy {:.0}/ha).",
+            "Dodano obszar '{}' ({:.1} ha). Przypisz presety w panelu 📐 Obszary, \
+             aby generował drzewa.",
             self.project.areas.last().unwrap().label,
-            area_ha,
-            (area_ha * f64::from(snap.density_per_ha)).round() as u64,
-            snap.density_per_ha
+            area_ha
         ));
     }
 
@@ -577,34 +580,227 @@ fn with_extension(mut path: std::path::PathBuf, ext: &str) -> std::path::PathBuf
     path
 }
 
+/// Wiersze miksu presetów: udział + usuwanie, poniżej combo dodawania.
+/// Zwraca true, gdy coś zmieniono. `presets` = łączna lista (nazwa → snap).
+fn ui_mix_rows(
+    ui: &mut egui::Ui,
+    id: &str,
+    mix: &mut Vec<(String, f32)>,
+    presets: &[(String, PSnap)],
+) -> bool {
+    let mut changed = false;
+    let mut remove: Option<usize> = None;
+    for (i, (name, share)) in mix.iter_mut().enumerate() {
+        let density = presets
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, s)| s.density_per_ha);
+        ui.horizontal(|ui| {
+            ui.monospace(name.as_str());
+            if let Some(d) = density {
+                ui.weak(format!("{d:.0}/ha"));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let before = *share;
+                ui.add(
+                    egui::DragValue::new(share)
+                        .speed(0.01)
+                        .clamp_range(0.05..=1.0)
+                        .suffix("×"),
+                );
+                if (*share - before).abs() > f32::EPSILON {
+                    changed = true;
+                }
+                if ui.button("✖").clicked() {
+                    remove = Some(i);
+                    changed = true;
+                }
+            });
+        });
+    }
+    if let Some(i) = remove {
+        mix.remove(i);
+    }
+
+    // dodawanie presetu do miksu — jedno kliknięcie na pozycji listy
+    ui.horizontal(|ui| {
+        ui.label("＋ Dodaj preset:");
+        egui::ComboBox::from_id_source(egui::Id::new(format!("mix_add_{id}")))
+            .selected_text("wybierz z listy…")
+            .show_ui(ui, |ui| {
+                for (n, s) in presets.iter() {
+                    let already = mix.iter().any(|(m, _)| m == n);
+                    let label = if already {
+                        format!("✓ {}", n)
+                    } else {
+                        format!("{n}  ({:.0}/ha)", s.density_per_ha)
+                    };
+                    if ui
+                        .add_enabled(!already, egui::Button::new(label))
+                        .clicked()
+                    {
+                        mix.push((n.clone(), 1.0));
+                        changed = true;
+                    }
+                }
+            });
+        if mix.len() > 1 {
+            ui.small("(udziały × sumują się do dowolnej wartości — liczone proporcjonalnie)");
+        }
+    });
+    changed
+}
+
+/// Efekt miksu: średnia ważona gęstość + suma wag gatunków (wg modelu).
+fn compute_mix_snap(
+    mix: &[(String, f32)],
+    presets: &[(String, PSnap)],
+) -> Option<PSnap> {
+    let mut total_share = 0.0f32;
+    let mut density = 0.0f32;
+    use std::collections::HashMap as HM;
+    let mut wmap: HM<String, f32> = HM::new();
+    for (name, share) in mix {
+        let Some(p) = presets.iter().find(|(n, _)| n == name) else { continue };
+        total_share += share;
+        density += p.1.density_per_ha * share;
+        for (model, w) in &p.1.weights {
+            *wmap.entry(model.clone()).or_insert(0.0) += w * share;
+        }
+    }
+    if total_share <= 0.0 || wmap.is_empty() {
+        return None;
+    }
+    Some(PSnap {
+        name: "Miks".into(),
+        density_per_ha: density / total_share,
+        weights: wmap.into_iter().filter(|(_, w)| *w > 0.0).collect(),
+    })
+}
+
+// --- pola ustawień z indywidualnym przywracaniem domyślnych -------------------
+
+/// Pomarańczowy kolor zmienionego ustawienia.
+const ORANGE_MOD: Color32 = Color32::from_rgb(255, 150, 40);
+
+fn lbl_mod(ui: &mut egui::Ui, label: &str, modified: bool) {
+    if modified {
+        ui.colored_label(ORANGE_MOD, label);
+    } else {
+        ui.label(label);
+    }
+}
+
+/// Przycisk ⟲ widoczny tylko gdy wartość ≠ domyślnej. Zwraca true po kliknięciu.
+fn reset_btn(ui: &mut egui::Ui, modified: bool) -> bool {
+    modified
+        && ui
+            .small_button("⟲")
+            .on_hover_text("Przywróć wartość domyślną")
+            .clicked()
+}
+
+/// ui.horizontal z tooltipem na całym wierszu.
+fn horiz_tip<R>(
+    ui: &mut egui::Ui,
+    tip: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    let r = ui.horizontal(add);
+    if !tip.is_empty() {
+        r.response.on_hover_text(tip);
+    }
+    r.inner
+}
+
+fn setting_bool(ui: &mut egui::Ui, label: &str, tip: &str, v: &mut bool, d: bool) {
+    ui.horizontal(|ui| {
+        let m = *v != d;
+        let _ = ui.checkbox(v, label).on_hover_text(tip).changed();
+        if reset_btn(ui, m) {
+            *v = d;
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn setting_f64(
+    ui: &mut egui::Ui,
+    label: &str,
+    tip: &str,
+    v: &mut f64,
+    d: f64,
+    speed: f64,
+    range: std::ops::RangeInclusive<f64>,
+) {
+    ui.horizontal(|ui| {
+        let m = (*v - d).abs() > 1e-9;
+        lbl_mod(ui, label, m);
+        let resp = ui.add(
+            egui::DragValue::new(v).speed(speed).clamp_range(range),
+        );
+        if !tip.is_empty() {
+            resp.on_hover_text(tip);
+        }
+        if reset_btn(ui, m) {
+            *v = d;
+        }
+    });
+}
+
+fn setting_u64(ui: &mut egui::Ui, label: &str, v: &mut u64, d: u64) {
+    ui.horizontal(|ui| {
+        let m = *v != d;
+        lbl_mod(ui, label, m);
+        ui.add(egui::DragValue::new(v).speed(1.0).clamp_range(0..=u64::MAX));
+        if reset_btn(ui, m) {
+            *v = d;
+        }
+    });
+}
+
+fn setting_u32(ui: &mut egui::Ui, label: &str, v: &mut u32, d: u32, range: std::ops::RangeInclusive<u32>) {
+    ui.horizontal(|ui| {
+        let m = *v != d;
+        lbl_mod(ui, label, m);
+        ui.add(egui::DragValue::new(v).clamp_range(range));
+        if reset_btn(ui, m) {
+            *v = d;
+        }
+    });
+}
+
 // --- App impl -----------------------------------------------------------------
 
 impl ForestApp {
-    /// Łączna liczba presetów: wbudowane + użytkownika.
-    fn preset_count(&self) -> usize {
-        forest_core::species::zone_presets().len() + self.user_presets.len()
-    }
+    
+    
 
-    /// Znormalizowany podgląd presetu o łącznym indeksie `i`.
-    fn resolve_preset(&self, i: usize) -> Option<PSnap> {
-        let builtins = forest_core::species::zone_presets();
-        if let Some(p) = builtins.get(i) {
-            let up = UserPreset::from_builtin(p);
-            return Some(PSnap {
-                name: up.name,
-                density_per_ha: up.density_per_ha,
-                weights: up.weights,
-            });
-        }
-        self.user_presets
-            .get(i - builtins.len())
+
+    /// Łączna lista presetów jako snapshoty — UŻYTKOWNIKA NAJPIERW,
+    /// dzięki czemu wyszukiwanie po nazwie preferuje edytowane kopie.
+    fn all_presets(&self) -> Vec<PSnap> {
+        let mut v: Vec<PSnap> = self
+            .user_presets
+            .iter()
             .map(|u| PSnap {
                 name: u.name.clone(),
                 density_per_ha: u.density_per_ha,
                 weights: u.weights.clone(),
             })
+            .collect();
+        for p in forest_core::species::zone_presets() {
+            let up = UserPreset::from_builtin(&p);
+            v.push(PSnap {
+                name: up.name,
+                density_per_ha: up.density_per_ha,
+                weights: up.weights,
+            });
+        }
+        v
     }
 
+    
     fn load_user_presets(&mut self) {
         match UserPresetLibrary::load(DEFAULT_PRESETS_FILE) {
             Ok(lib) => {
@@ -666,37 +862,11 @@ impl ForestApp {
             label: snap.name.clone(),
             density_per_ha: snap.density_per_ha,
             species_weights: zw,
+            preset_mix: Vec::new(),
         });
     }
 
-    /// Wagi z presetu (łączny indeks) przypisane do obszaru.
-    fn apply_preset_to_area_index(&mut self, ai: usize, pi: usize) {
-        let Some(snap) = self.resolve_preset(pi) else { return };
-        // najpierw zmapuj modele na indeksy (pożyczenie niemutowalne), potem mutacja
-        let mapped: Vec<(usize, f32)> = {
-            let species = &self.project.species;
-            snap.weights
-                .iter()
-                .filter_map(|(model, w)| {
-                    species
-                        .iter()
-                        .position(|s| s.model.eq_ignore_ascii_case(model))
-                        .map(|idx| (idx, *w))
-                })
-                .collect()
-        };
-        if mapped.is_empty() {
-            self.error = Some(format!(
-                "Preset '{}': żaden z jego modeli nie występuje na liście gatunków.",
-                snap.name
-            ));
-            return;
-        }
-        if let Some(a) = self.project.areas.get_mut(ai) {
-            a.density_per_ha = snap.density_per_ha;
-            a.species_weights = mapped;
-        }
-    }
+
 }
 
 impl eframe::App for ForestApp {
@@ -777,25 +947,7 @@ impl ForestApp {
                 self.save_project();
             }
             ui.separator();
-            // tryb rysowania poligonów — preset z listy łącznej (wbudowane + moje)
-            egui::ComboBox::from_id_source("draw_preset")
-                .selected_text(format!(
-                    "✏ {}",
-                    self.resolve_preset(self.draw_preset)
-                        .map_or("—".to_string(), |s| s.name)
-                ))
-                .show_ui(ui, |ui| {
-                    let n_builtin = forest_core::species::zone_presets().len();
-                    for i in 0..self.preset_count() {
-                        let Some(s) = self.resolve_preset(i) else { continue };
-                        let label = if i < n_builtin {
-                            s.name.clone()
-                        } else {
-                            format!("★ {}", s.name)
-                        };
-                        ui.selectable_value(&mut self.draw_preset, i, label);
-                    }
-                });
+            // obszar powstaje "pusty" — presety przypisuje się w panelu Obszary
             if ui
                 .add(egui::Button::new(if self.draw_mode {
                     "✏ Rysowanie: WŁ"
@@ -909,25 +1061,36 @@ impl ForestApp {
         CollapsingHeader::new("🗺 Mapa / eksport")
             .default_open(true)
             .show(ui, |ui| {
+                let d = ForestProject::default();
                 let p = &mut self.project;
                 ui.horizontal(|ui| {
-                    ui.label("Rozmiar [m]:");
+                    let m = (p.map_size_m - d.map_size_m).abs() > 1e-9;
+                    lbl_mod(ui, "Rozmiar [m]:", m);
                     ui.add(egui::DragValue::new(&mut p.map_size_m).speed(10.0));
+                    if reset_btn(ui, m) {
+                        p.map_size_m = d.map_size_m;
+                    }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Easting offset:");
+                    let m = (p.easting_offset - d.easting_offset).abs() > 1e-9;
+                    lbl_mod(ui, "Easting offset:", m);
                     ui.add(egui::DragValue::new(&mut p.easting_offset).speed(100.0));
+                    if reset_btn(ui, m) {
+                        p.easting_offset = d.easting_offset;
+                    }
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Northing offset:");
+                    let m = (p.northing_offset - d.northing_offset).abs() > 1e-9;
+                    lbl_mod(ui, "Northing offset:", m);
                     ui.add(egui::DragValue::new(&mut p.northing_offset).speed(100.0));
+                    if reset_btn(ui, m) {
+                        p.northing_offset = d.northing_offset;
+                    }
                 });
+                setting_u64(ui, "Ziarno (seed):", &mut p.seed, d.seed);
                 ui.horizontal(|ui| {
-                    ui.label("Ziarno (seed):");
-                    ui.add(egui::DragValue::new(&mut p.seed).speed(1.0));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Wysokość:");
+                    let m = p.elevation_mode != d.elevation_mode;
+                    lbl_mod(ui, "Wysokość:", m);
                     egui::ComboBox::from_id_source("elev_mode")
                         .selected_text(match p.elevation_mode {
                             ElevationMode::RelativeZero => "relative (0)",
@@ -945,6 +1108,9 @@ impl ForestApp {
                                 "absolute (z ASC)",
                             );
                         });
+                    if reset_btn(ui, m) {
+                        p.elevation_mode = d.elevation_mode;
+                    }
                 });
             });
 
@@ -952,12 +1118,28 @@ impl ForestApp {
         CollapsingHeader::new("⚙ Źródła generowania")
             .default_open(true)
             .show(ui, |ui| {
-                ui.checkbox(&mut self.project.use_mask_zones, "Strefy z maski (kolory)")
-                    .on_hover_text("Generuj w obszarach wskazanych kolorami maski");
-                ui.checkbox(&mut self.project.use_areas, "Obszary rysowane (poligony)")
-                    .on_hover_text("Generuj wewnątrz narysowanych poligonów");
-                ui.checkbox(&mut self.project.edges.enabled, "Granica lasu (krzewy)")
-                    .on_hover_text("Pas krzewów/podrostu wzdłuż krawędzi lasu (parametry w sekcji 🧱)");
+                let d = ForestProject::default();
+                setting_bool(
+                    ui,
+                    "Strefy z maski (kolory)",
+                    "Generuj w obszarach wskazanych kolorami maski",
+                    &mut self.project.use_mask_zones,
+                    d.use_mask_zones,
+                );
+                setting_bool(
+                    ui,
+                    "Obszary rysowane (poligony)",
+                    "Generuj wewnątrz narysowanych poligonów",
+                    &mut self.project.use_areas,
+                    d.use_areas,
+                );
+                setting_bool(
+                    ui,
+                    "Granica lasu (krzewy)",
+                    "Pas krzewów/podrostu wzdłuż krawędzi lasu (parametry w sekcji 🧱)",
+                    &mut self.project.edges.enabled,
+                    false,
+                );
                 ui.separator();
                 ui.small(format!(
                     "Aktywne źródła: {}{}{}",
@@ -977,49 +1159,85 @@ impl ForestApp {
         CollapsingHeader::new("🧱 Granica lasu")
             .default_open(false)
             .show(ui, |ui| {
+                let d_edges = EdgeSettings::default();
                 let e = &mut self.project.edges;
-                ui.checkbox(&mut e.enabled, "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)");
+                setting_bool(
+                    ui,
+                    "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)",
+                    "",
+                    &mut e.enabled,
+                    d_edges.enabled,
+                );
                 ui.add_enabled_ui(e.enabled, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Szerokość pasa [m]:");
+                        let m = (e.band_width_m - d_edges.band_width_m).abs() > 1e-9;
+                        lbl_mod(ui, "Szerokość pasa [m]:", m);
                         ui.add(
                             egui::DragValue::new(&mut e.band_width_m)
                                 .speed(1.0)
                                 .clamp_range(1.0..=300.0),
                         );
+                        if reset_btn(ui, m) {
+                            e.band_width_m = d_edges.band_width_m;
+                        }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Gęstość [szt/ha]:");
+                        let m = (e.density_per_ha - d_edges.density_per_ha).abs() > 1e-9;
+                        lbl_mod(ui, "Gęstość [szt/ha]:", m);
                         ui.add(
                             egui::DragValue::new(&mut e.density_per_ha)
                                 .speed(1.0)
                                 .clamp_range(1.0..=5000.0),
                         );
-                    });
-                    ui.checkbox(&mut e.blend, "Wtapianie pasa")
-                        .on_hover_text("Gęstość zanika wraz z odległością od granicy \
-                                        (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków");
-                    ui.horizontal(|ui| {
-                        ui.label("Poszarpanie granicy [m]:")
-                            .on_hover_text("Szum przesuwający linię lasu — brzeg nie jest \
-                                            równy jak od linijki. Dotyczy też obrysów poligonów.");
-                        ui.add(
-                            egui::DragValue::new(&mut e.jagged_m)
-                                .speed(1.0)
-                                .clamp_range(0.0..=200.0),
-                        );
+                        if reset_btn(ui, m) {
+                            e.density_per_ha = d_edges.density_per_ha;
+                        }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Wtapianie w las [m]:")
-                            .on_hover_text("Jak głęboko od krawędzi gęstość drzew narasta \
-                                            0 -> pełna. Otwarte, naturalne obrzeża lasu.");
+                        let m = e.blend != d_edges.blend;
+                        let r = ui.checkbox(&mut e.blend, "Wtapianie pasa")
+                            .on_hover_text("Gęstość zanika wraz z odległością od granicy \
+                                            (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków")
+                            .changed();
+                        if reset_btn(ui, m) {
+                            e.blend = d_edges.blend;
+                        }
+                        let _ = r;
+                    });
+                    ui.horizontal(|ui| {
+                        let m = (e.jagged_m - d_edges.jagged_m).abs() > 1e-9;
+                        lbl_mod(ui, "Poszarpanie granicy [m]:", m);
+                        if reset_btn(ui, m) {
+                            e.jagged_m = d_edges.jagged_m;
+                        }
+                    });
+                    horiz_tip(ui, "Jak głęboko od krawędzi gęstość drzew narasta \
+                                    0 -> pełna. Otwarte, naturalne obrzeża lasu.", |ui| {
+                        let m = (e.blend_inside_m - d_edges.blend_inside_m).abs() > 1e-9;
+                        lbl_mod(ui, "Wtapianie w las [m]:", m);
                         ui.add(
                             egui::DragValue::new(&mut e.blend_inside_m)
                                 .speed(1.0)
                                 .clamp_range(0.0..=500.0),
                         );
+                        if reset_btn(ui, m) {
+                            e.blend_inside_m = d_edges.blend_inside_m;
+                        }
                     });
-                    ui.small("Wagi gatunków granicy:");
+                    ui.horizontal(|ui| {
+                        ui.small("Wagi gatunków granicy:");
+                        let m = e.species_weights != d_edges.species_weights;
+                        if reset_btn(ui, m) {
+                            // przywróć domyślne krzewy, odfiltrowując spoza listy gatunków
+                            let n = self.project.species.len();
+                            e.species_weights = d_edges
+                                .species_weights
+                                .iter()
+                                .filter(|(i, _)| (*i as usize) < n)
+                                .copied()
+                                .collect();
+                        }
+                    });
                     let n_species = self.project.species.len();
                     for si in 0..n_species {
                         let sp = &self.project.species[si];
@@ -1066,20 +1284,29 @@ impl ForestApp {
         CollapsingHeader::new("⛰ Filtry środowiskowe")
             .default_open(false)
             .show(ui, |ui| {
+                let d = ForestProject::default();
                 let p = &mut self.project;
-                opt_f64(ui, "Min. wysokość [m]", &mut p.min_altitude, -1.0..=8000.0);
-                opt_f64(ui, "Maks. wysokość [m]", &mut p.max_altitude, -1.0..=8000.0);
-                opt_f64(ui, "Maks. spadek [°]", &mut p.max_slope_deg, 0.0..=90.0);
-                ui.horizontal(|ui| {
-                    ui.label("Tolerancja koloru:");
-                    ui.add(egui::DragValue::new(&mut p.color_tolerance).clamp_range(0..=255));
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Margines krawędzi [m]:");
-                    ui.add(egui::DragValue::new(&mut p.edge_padding_m).speed(1.0).clamp_range(0.0..=1000.0));
-                });
+                opt_f64(ui, "Min. wysokość [m]", &mut p.min_altitude, -1.0..=8000.0, d.min_altitude);
+                opt_f64(ui, "Maks. wysokość [m]", &mut p.max_altitude, -1.0..=8000.0, d.max_altitude);
+                opt_f64(ui, "Maks. spadek [°]", &mut p.max_slope_deg, 0.0..=90.0, d.max_slope_deg);
+                setting_u32(ui, "Tolerancja koloru:", &mut p.color_tolerance, d.color_tolerance, 0..=255);
+                setting_f64(
+                    ui,
+                    "Margines krawędzi [m]:",
+                    "",
+                    &mut p.edge_padding_m,
+                    d.edge_padding_m,
+                    1.0,
+                    0.0..=1000.0,
+                );
                 ui.separator();
-                ui.small("Kolory wykluczone (np. drogi/woda):");
+                ui.horizontal(|ui| {
+                    let m = p.exclusion_colors != d.exclusion_colors;
+                    lbl_mod(ui, "Kolory wykluczone (np. drogi/woda):", m);
+                    if reset_btn(ui, m) {
+                        p.exclusion_colors = d.exclusion_colors.clone();
+                    }
+                });
                 let mut remove: Option<usize> = None;
                 for (i, c) in p.exclusion_colors.iter().enumerate() {
                     ui.horizontal(|ui| {
@@ -1147,21 +1374,31 @@ impl ForestApp {
         CollapsingHeader::new("🎲 Rozrzut / polany")
             .default_open(false)
             .show(ui, |ui| {
+                let d = ForestProject::default();
                 let p = &mut self.project;
-                ui.horizontal(|ui| {
-                    ui.label("Mnożnik odstępów:")
-                        .on_hover_text(">1 = rzadszy las");
+                horiz_tip(ui, ">1 = rzadszy las", |ui| {
+                    let m = (p.spacing_multiplier - d.spacing_multiplier).abs() > 1e-9;
+                    lbl_mod(ui, "Mnożnik odstępów:", m);
                     ui.add(egui::DragValue::new(&mut p.spacing_multiplier).speed(0.02).clamp_range(0.05..=5.0));
+                    if reset_btn(ui, m) {
+                        p.spacing_multiplier = d.spacing_multiplier;
+                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Skala polan [m]:")
-                        .on_hover_text("Długość fali szumu polan; 0 = wyłączone");
+                horiz_tip(ui, "Długość fali szumu polan; 0 = wyłączone", |ui| {
+                    let m = (p.clearing_scale_m - d.clearing_scale_m).abs() > 1e-9;
+                    lbl_mod(ui, "Skala polan [m]:", m);
                     ui.add(egui::DragValue::new(&mut p.clearing_scale_m).speed(5.0).clamp_range(0.0..=5000.0));
+                    if reset_btn(ui, m) {
+                        p.clearing_scale_m = d.clearing_scale_m;
+                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Siła polan:")
-                        .on_hover_text("Jaka część obszaru ma być prześwitem");
+                horiz_tip(ui, "Jaka część obszaru ma być prześwitem", |ui| {
+                    let m = (p.clearing_strength - d.clearing_strength).abs() > 1e-9;
+                    lbl_mod(ui, "Siła polan:", m);
                     ui.add(egui::Slider::new(&mut p.clearing_strength, 0.0..=0.9));
+                    if reset_btn(ui, m) {
+                        p.clearing_strength = d.clearing_strength;
+                    }
                 });
             });
 
@@ -1345,6 +1582,13 @@ impl ForestApp {
                 ui.separator();
 
                 let mut to_remove: Option<usize> = None;
+                // dane dla miksu presetów (klonowane przed pożyczkiem &mut stref)
+                let species_snap = self.project.species.clone();
+                let preset_list: Vec<(String, PSnap)> = self
+                    .all_presets()
+                    .into_iter()
+                    .map(|s| (s.name.clone(), s))
+                    .collect();
                 for zi in 0..self.project.zones.len() {
                     let editing = self.zone_color_edit == Some(zi);
 
@@ -1443,6 +1687,37 @@ impl ForestApp {
                             ));
                         }
                     }
+
+                    // 🧩 miks presetów — kilka szablonów na tej samej strefie
+                    ui.indent(format!("zmix{zi}"), |ui| {
+                        let changed =
+                            ui_mix_rows(ui, &format!("zone{zi}"), &mut z.preset_mix, &preset_list);
+                        if changed {
+                            if let Some(snap) = compute_mix_snap(&z.preset_mix, &preset_list) {
+                                let mapped: Vec<(usize, f32)> = snap
+                                    .weights
+                                    .iter()
+                                    .filter_map(|(model, w)| {
+                                        species_snap
+                                            .iter()
+                                            .position(|s| s.model.eq_ignore_ascii_case(model))
+                                            .map(|idx| (idx, *w))
+                                    })
+                                    .collect();
+                                if !mapped.is_empty() {
+                                    z.density_per_ha = snap.density_per_ha;
+                                    z.species_weights = mapped;
+                                }
+                            }
+                        }
+                        if !z.preset_mix.is_empty() {
+                            ui.small(format!(
+                                "Efekt: {:.0} szt/ha, {} gatunków (ręczna edycja wag niżej czyści miks)",
+                                z.density_per_ha,
+                                z.species_weights.len()
+                            ));
+                        }
+                    });
 
                     ui.horizontal(|ui| {
                         ui.label("Gęstość [szt/ha]:");
@@ -1709,12 +1984,13 @@ impl ForestApp {
                     "Rysowane na mapie: wybierz preset na pasku → ✏ Rysuj obszar → klikaj wierzchołki (LPM), Enter/dwuklik = zakończ."
                 ));
                 ui.separator();
-                // łączna lista presetów policzona PRZED iteracją (bez pożyczania self)
-                let n_builtin = forest_core::species::zone_presets().len();
-                let all_presets: Vec<Option<PSnap>> =
-                    (0..self.preset_count()).map(|i| self.resolve_preset(i)).collect();
                 let mut to_remove: Option<usize> = None;
-                let mut pending_preset: Option<(usize, usize)> = None; // (area_idx, preset_idx)
+                let species_snap_a = self.project.species.clone();
+                let preset_list_a: Vec<(String, PSnap)> = self
+                    .all_presets()
+                    .into_iter()
+                    .map(|s| (s.name.clone(), s))
+                    .collect();
                 for (ai, a) in self.project.areas.iter_mut().enumerate() {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
@@ -1743,28 +2019,45 @@ impl ForestApp {
                                 est
                             ));
                         });
-                        ui.horizontal(|ui| {
-                            ui.label("Preset:");
-                            egui::ComboBox::from_id_source(format!("area_preset_{ai}"))
-                                .selected_text("(zachowaj)")
-                                .show_ui(ui, |ui| {
-                                    for (pi, s) in all_presets.iter().enumerate() {
-                                        let Some(s) = s else { continue };
-                                        let label = if pi < n_builtin {
-                                            s.name.clone()
-                                        } else {
-                                            format!("★ {}", s.name)
-                                        };
-                                        if ui.selectable_label(false, label).clicked() {
-                                            pending_preset = Some((ai, pi));
-                                        }
+                        // 🧩 miks presetów na tym obszarze
+                        ui.indent(format!("amix{ai}"), |ui| {
+                            let changed = ui_mix_rows(
+                                ui,
+                                &format!("area{ai}"),
+                                &mut a.preset_mix,
+                                &preset_list_a,
+                            );
+                            if changed {
+                                if let Some(snap) =
+                                    compute_mix_snap(&a.preset_mix, &preset_list_a)
+                                {
+                                    let mapped: Vec<(usize, f32)> = snap
+                                        .weights
+                                        .iter()
+                                        .filter_map(|(model, w)| {
+                                            species_snap_a
+                                                .iter()
+                                                .position(|s| {
+                                                    s.model.eq_ignore_ascii_case(model)
+                                                })
+                                                .map(|idx| (idx, *w))
+                                        })
+                                        .collect();
+                                    if !mapped.is_empty() {
+                                        a.density_per_ha = snap.density_per_ha;
+                                        a.species_weights = mapped;
                                     }
-                                });
+                                }
+                            }
+                            if !a.preset_mix.is_empty() {
+                                ui.small(format!(
+                                    "Efekt: {:.0} szt/ha, {} gatunków",
+                                    a.density_per_ha,
+                                    a.species_weights.len()
+                                ));
+                            }
                         });
                     });
-                }
-                if let Some((ai, pi)) = pending_preset {
-                    self.apply_preset_to_area_index(ai, pi);
                 }
                 if let Some(i) = to_remove {
                     self.project.areas.remove(i);
@@ -2046,10 +2339,21 @@ fn clamp_pan_to_view(rect: Rect, mapf: f32, scale: f32, pan: Vec2) -> Vec2 {
     p
 }
 
-fn opt_f64(ui: &mut egui::Ui, label: &str, val: &mut Option<f64>, range: std::ops::RangeInclusive<f64>) {
+fn opt_f64(
+    ui: &mut egui::Ui,
+    label: &str,
+    val: &mut Option<f64>,
+    range: std::ops::RangeInclusive<f64>,
+    default: Option<f64>,
+) {
     ui.horizontal(|ui| {
-        let mut enabled = val.is_some();
-        ui.checkbox(&mut enabled, "");
+        let modified = *val != default;
+        let enabled = val.is_some();
+        if enabled {
+            lbl_mod(ui, label, modified);
+        } else {
+            ui.label(label);
+        }
         if enabled && val.is_none() {
             *val = Some(*range.start());
         }
@@ -2057,13 +2361,19 @@ fn opt_f64(ui: &mut egui::Ui, label: &str, val: &mut Option<f64>, range: std::op
             *val = None;
         }
         ui.add_enabled_ui(enabled, |ui| {
-            ui.label(label);
             if let Some(v) = val {
                 let mut d = *v;
-                if ui.add(egui::DragValue::new(&mut d).speed(1.0).clamp_range(range.clone())).changed() {
+                if ui
+                    .add(egui::DragValue::new(&mut d).speed(1.0).clamp_range(range.clone()))
+                    .changed()
+                {
                     *v = d;
                 }
             }
         });
+        if reset_btn(ui, modified) {
+            *val = default;
+            // zsynchronizuj checkbox z faktycznym stanem
+        }
     });
 }
