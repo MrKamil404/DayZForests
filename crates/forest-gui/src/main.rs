@@ -1413,31 +1413,69 @@ impl ForestApp {
                     p.cut_zones.remove(i);
                 }
 
-                // dodawanie z kolorów maski
-                if let Some(m) = &self.mask {
+                // dodawanie z kolorów maski — histogram z cache (liczony raz przy wczytaniu)
+                if self.mask.is_some() {
                     ui.small(tr(lang, "Dodaj strefę z koloru maski:"));
-                    let hist = m.color_histogram(256);
-                    let used: Vec<Rgb8> =
-                        p.cut_zones.iter().map(|c| c.color).collect();
-                    egui::Grid::new("cut_grid").num_columns(6).show(ui, |ui| {
-                        for (c, n) in hist.iter().filter(|(c, _)| !used.contains(c)).take(12) {
-                            let cc = *c;
-                            let [r, g, b] = cc.0;
-                            let (_rect, resp) =
-                                ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                            ui.painter_at(resp.rect)
-                                .rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
-                            if resp.clicked() {
-                                p.cut_zones.push(forest_core::preset::CutZone {
-                                    color: cc,
-                                    margin_m: 10.0,
-                                });
-                            }
-                            ui.weak(format!("{}", n));
+                    match &self.histogram {
+                        None => {
+                            ui.small(tr(lang, "Analizuję kolory maski..."));
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(150));
                         }
-                    });
+                        Some(hist) => {
+                            let used: Vec<Rgb8> =
+                                p.cut_zones.iter().map(|c| c.color).collect();
+                            let cands: Vec<(Rgb8, usize)> = hist
+                                .iter()
+                                .filter(|(c, _)| !used.contains(c))
+                                .take(12)
+                                .cloned()
+                                .collect();
+                            if cands.is_empty() {
+                                ui.small("(brak nowych kolorów)");
+                            } else {
+                                ScrollArea::vertical()
+                                    .max_height(160.0)
+                                    .id_source("cut_colors")
+                                    .show(ui, |ui| {
+                                        for (c, n) in &cands {
+                                            let cc = *c;
+                                            let [r, g, b] = cc.0;
+                                            ui.horizontal(|ui| {
+                                                let (_rect, resp) = ui.allocate_exact_size(
+                                                    Vec2::splat(18.0),
+                                                    Sense::click(),
+                                                );
+                                                ui.painter_at(resp.rect).rect_filled(
+                                                    resp.rect,
+                                                    2.0,
+                                                    Color32::from_rgb(r, g, b),
+                                                );
+                                                ui.monospace(format!(
+                                                    "#{r:02X}{g:02X}{b:02X}"
+                                                ));
+                                                ui.weak(format!("{n}"));
+                                                if ui
+                                                    .button(tr(lang, "+ Wyklucz"))
+                                                    .on_hover_text(
+                                                        "Dodaj strefę wycinania",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    p.cut_zones
+                                                        .push(forest_core::preset::CutZone {
+                                                            color: cc,
+                                                            margin_m: 10.0,
+                                                        });
+                                                }
+                                            });
+                                        }
+                                    });
+                            }
+                        }
+                    }
                 } else {
-                    ui.small("(wczytaj maskę, aby wybierać kolory)");
+                    ui.small(tr(lang, "(wczytaj maskę, aby wybierać kolory)"));
                 }
                 if p.cut_zones.len() != d.cut_zones.len() {
                     ui.small("Strefy działają po kliknięciu „▶ Generuj”.");
@@ -1647,31 +1685,36 @@ ui.text_edit_singleline(&mut sp.label);
                                     }
                                 });
                                 ui.small("Kolor z maski:");
-                                if let Some(m) = &self.mask {
-                                    let hist = m.color_histogram(256);
-                                    egui::Grid::new(format!("spcol_grid{i}"))
-                                        .num_columns(8)
-                                        .show(ui, |ui| {
-                                            for (c, n) in hist.iter().take(24) {
-                                                let cc = c.0;
-                                                let (_rect, resp) = ui
-                                                    .allocate_exact_size(
-                                                        Vec2::splat(18.0),
-                                                        Sense::click(),
+                                match &self.histogram {
+                                    None => {
+                                        ui.small(tr(lang, "Analizuję kolory maski..."));
+                                        ui.ctx().request_repaint_after(
+                                            std::time::Duration::from_millis(150),
+                                        );
+                                    }
+                                    Some(hist) => {
+                                        egui::Grid::new(format!("spcol_grid{i}"))
+                                            .num_columns(8)
+                                            .show(ui, |ui| {
+                                                for (c, n) in hist.iter().take(24) {
+                                                    let cc = c.0;
+                                                    let (_rect, resp) = ui
+                                                        .allocate_exact_size(
+                                                            Vec2::splat(18.0),
+                                                            Sense::click(),
+                                                        );
+                                                    ui.painter_at(resp.rect).rect_filled(
+                                                        resp.rect,
+                                                        2.0,
+                                                        Color32::from_rgb(cc[0], cc[1], cc[2]),
                                                     );
-                                                ui.painter_at(resp.rect).rect_filled(
-                                                    resp.rect,
-                                                    2.0,
-                                                    Color32::from_rgb(cc[0], cc[1], cc[2]),
-                                                );
-                                                if resp.clicked() {
-                                                    sp.color = Some(*c);
+                                                    if resp.clicked() {
+                                                        sp.color = Some(*c);
+                                                    }
+                                                    ui.weak(format!("{}", n));
                                                 }
-                                                ui.weak(format!("{}", n));
-                                            }
-                                        });
-                                } else {
-                                    ui.small("(wczytaj maskę, aby wybierać kolory)");
+                                            });
+                                    }
                                 }
                                 if ui.small_button("⟲ auto").clicked() {
                                     sp.color = None;

@@ -131,6 +131,7 @@ const DICT: &[Entry] = &[
         "Total: {0} objects | edge: {1} | cut: {2} | {3} ms",
         "Gesamt: {0} Objekte | Rand: {1} | geschnitten: {2} | {3} ms",
     ),
+    ("(brak nowych kolorów)", "(no new colors)", "(keine neuen Farben)"),
     ("(brak źródeł)", "(no sources)", "(keine Quellen)"),
     // --- pliki ---
     (

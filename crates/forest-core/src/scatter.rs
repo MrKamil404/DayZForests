@@ -1074,21 +1074,92 @@ pub fn generate(
         };
         use std::collections::HashSet;
         let mut cut_set: HashSet<u32> = HashSet::new();
-        for cz in &project.cut_zones {
-            let mp = ((f64::from(cz.margin_m) / ps).ceil() as usize).clamp(1, 4096);
-            let mut local: HashSet<u32> = HashSet::new();
-            let mut frontier: Vec<u32> = Vec::new();
-            for y in 0..m.height {
-                for x in 0..m.width {
-                    if m.alpha(x, y) < 128 {
+
+        // marginesy w pikselach (0 = bez bufora, tylko piksele koloru)
+        let margins: Vec<usize> = project
+            .cut_zones
+            .iter()
+            .map(|cz| {
+                let mp = (f64::from(cz.margin_m) / ps).ceil() as usize;
+                mp.min(4096)
+            })
+            .collect();
+        let max_mp = margins.iter().copied().max().unwrap_or(0);
+
+        // ramka skanowania: tylko obszar, w którym są obiekty, + bufor
+        // (drastycznie mniejsze pole przy lasach zajmujących część mapy)
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for o in &objects {
+            let fx = o.x / ps;
+            let fy_top = (size - o.y) / ps;
+            if fx < 0.0
+                || fy_top < 0.0
+                || fx >= f64::from(m.width)
+                || fy_top >= f64::from(m.height)
+            {
+                continue;
+            }
+            let xi = fx as u32;
+            let yi = fy_top as u32;
+            x0 = x0.min(xi);
+            y0 = y0.min(yi);
+            x1 = x1.max(xi);
+            y1 = y1.max(yi);
+        }
+        let pad = max_mp as u32;
+        let sx0 = x0.saturating_sub(pad);
+        let sy0 = y0.saturating_sub(pad);
+        let sx1 = (x1 + pad).min(m.width - 1);
+        let sy1 = (y1 + pad).min(m.height - 1);
+
+        // wspólny przebieg po ramce: surowe odczyty RGBA + wczesne odrzucanie
+        // po kanałach (Manhattan <= tol wymaga |dr|,|dg|,|db| <= tol)
+        let tol = project.color_tolerance as i32;
+        let n_z = project.cut_zones.len();
+        let mut seeds: Vec<Vec<u32>> = vec![Vec::new(); n_z];
+        if sx0 <= sx1 && sy0 <= sy1 && !objects.is_empty() {
+            let rgba = &m.rgba;
+            let w = m.width as usize;
+            for y in sy0..=sy1 {
+                let row = (y as usize) * w;
+                for x in sx0..=sx1 {
+                    let off = (row + x as usize) * 4;
+                    if rgba[off + 3] < 128 {
                         continue;
                     }
-                    if m.pixel(x, y).dist(&cz.color) <= project.color_tolerance {
-                        let i = y * m.width + x;
-                        if local.insert(i as u32) {
-                            frontier.push(i as u32);
+                    let r = i32::from(rgba[off]);
+                    let g = i32::from(rgba[off + 1]);
+                    let b = i32::from(rgba[off + 2]);
+                    for (zi, cz) in project.cut_zones.iter().enumerate() {
+                        let [cr, cg, cb] = cz.color.0;
+                        if (r - i32::from(cr)).abs() > tol {
+                            continue;
                         }
+                        if (g - i32::from(cg)).abs() > tol {
+                            continue;
+                        }
+                        if (b - i32::from(cb)).abs() > tol {
+                            continue;
+                        }
+                        seeds[zi].push((y * m.width + x) as u32);
+                        // bez `break` — piksel może pasować do kilku stref
                     }
+                }
+            }
+        }
+
+        // dylatacja per strefa (tylko gdy bufor > 0)
+        for (zi, seed_vec) in seeds.into_iter().enumerate() {
+            let mp = margins[zi];
+            if mp == 0 {
+                cut_set.extend(seed_vec);
+                continue;
+            }
+            let mut local: HashSet<u32> = HashSet::with_capacity(seed_vec.len().saturating_mul(2));
+            let mut frontier: Vec<u32> = Vec::with_capacity(seed_vec.len());
+            for s in seed_vec {
+                if local.insert(s) {
+                    frontier.push(s);
                 }
             }
             for _level in 0..mp {
