@@ -1259,6 +1259,7 @@ dependencies = [
  "eframe",
  "forest-core",
  "rfd",
+ "serde",
  "serde_json",
 ]
 

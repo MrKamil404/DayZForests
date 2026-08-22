@@ -4,6 +4,9 @@ Desktopowy generator lasów dla **DayZ** (Rust + egui). Z maski satelitarnej
 PNG, opcjonalnej heightmapy ASC i wykluczeń GeoJSON generuje plik TXT
 z setkami tysięcy drzew gotowy do importu w **Terrain Builder** (DayZ Tools).
 
+**Język interfejsu:** 🌐 Polski / English / Deutsch — przełącznik na pasku
+narzędzi; wybór zapisywany w `ui_settings.json`.
+
 ![pipeline](docs/pipeline.svg)
 
 ```
@@ -79,7 +82,12 @@ moje presety, obszary, wynik generowania ze statystyką per źródło).
    mnożnik odstępów, skala i siła polan.
 5. **▶ Generuj** → podgląd punktów na masce (kolor = gatunek), statystyki.
 6. **💾 Eksport TXT (TB)** → zapis pliku dla Terrain Buildera.
+   **🖼 Eksport PNG (drzewa)** → przezroczysta warstwa drzew (kropki w kolorach
+   gatunków) w rozdzielczości równej rozmiarowi mapy (1 px = 1 m).
 7. **💾 Zapisz projekt** → cały setup w jednym `.json` (ścieżki + parametry).
+8. **🌳 Gatunki → 🎨** → ustaw indywidualny kolor gatunku: własny (paleta
+   kolorów) albo wybrany z wczytanej maski („Kolor z maski"). Kolor ten widnieje
+   w podglądzie, nakładce drzew i eksporcie PNG; „⟲ auto" przywraca automat.
 
 Kanvas: scroll = zoom do kursora, LPM/PPM drag = pan, **dwuklik** lub
 „Dopasuj widok” = reset. Widok jest przyciągany — mapa nie może wylecieć

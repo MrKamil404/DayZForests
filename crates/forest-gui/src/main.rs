@@ -14,8 +14,9 @@ use forest_core::heightmap::AscHeightmap;
 use forest_core::mask::{MaskImage, Rgb8};
 use forest_core::preset::{ElevationMode, EdgeSettings, ForestProject, ZoneDef};
 use forest_core::scatter::{generate, GenStats, PlacedObject};
-use forest_core::species::species_preview_color;
 use forest_core::user_presets::{UserPreset, UserPresetLibrary, DEFAULT_PRESETS_FILE};
+pub mod i18n;
+use i18n::{tr, tf, Lang};
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -30,6 +31,10 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(|_cc| {
             let mut app = ForestApp::new();
+            let prefs = i18n::UiPrefs::load(i18n::PREFS_FILE);
+            if let Some(l) = Lang::from_code(&prefs.language) {
+                app.lang = l;
+            }
             app.load_user_presets();
             Box::new(app)
         }),
@@ -70,11 +75,16 @@ struct ForestApp {
 
     /// Indeks strefy, której kolor jest właśnie edytowany.
     zone_color_edit: Option<usize>,
+    /// Indeks gatunku, którego kolor jest edytowany.
+    species_color_edit: Option<usize>,
 
     // presety użytkownika (edytowalne kopie + własne)
     user_presets: Vec<UserPreset>,
     preset_edit_open: Option<usize>,
     presets_dirty: bool,
+
+    // język interfejsu
+    lang: Lang,
 }
 
 /// Znormalizowany podgląd presetu (wbudowanego lub użytkownika).
@@ -120,9 +130,11 @@ impl ForestApp {
             draw_mode: false,
             draw_points: Vec::new(),
             zone_color_edit: None,
+            species_color_edit: None,
             user_presets: Vec::new(),
             preset_edit_open: None,
             presets_dirty: false,
+            lang: Lang::Pl,
         }
     }
 
@@ -207,12 +219,14 @@ impl ForestApp {
     // --- generowanie ----------------------------------------------------------
 
     fn start_generation(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+
         if self.busy {
             return;
         }
         if self.mask.is_none() && self.project.areas.is_empty() {
             self.error =
-                Some("Wczytaj maskę PNG albo narysuj przynajmniej jeden obszar (poligon).".into());
+                Some(tr(lang, "Wczytaj maskę PNG albo narysuj przynajmniej jeden obszar (poligon).").into());
             return;
         }
         // anuluj niedokończony szkic przy starcie generowania
@@ -234,7 +248,7 @@ impl ForestApp {
         self.gen_rx = Some(rx);
         self.busy = true;
         self.error = None;
-        self.info = Some("Generowanie w toku...".into());
+        self.info = Some(tr(lang, "Generowanie w toku...").into());
 
         std::thread::spawn(move || {
             let res = generate(&proj, mask.as_deref(), hm.as_deref(), ex.as_deref(), &|f| {
@@ -246,6 +260,7 @@ impl ForestApp {
     }
 
     fn poll_generation(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         let Some(rx) = &self.gen_rx else { return };
         match rx.try_recv() {
             Ok(Ok((objects, stats))) => {
@@ -261,7 +276,7 @@ impl ForestApp {
                 let overlay = build_overlay(dw, dh, &self.objects, &self.project);
                 self.overlay_tex =
                     Some(ctx.load_texture("overlay", overlay, TextureOptions::NEAREST));
-                self.info = Some("Gotowe.".into());
+                self.info = Some(tr(lang, "Gotowe.").into());
             }
             Ok(Err(e)) => {
                 self.busy = false;
@@ -314,6 +329,35 @@ impl ForestApp {
         }
     }
 
+    /// Eksport warstwy drzew jako przezroczysty PNG (rozdzielczość wg rozmiaru mapy).
+    fn export_trees_png(&mut self) {
+        if self.objects.is_empty() {
+            self.error = Some("Brak wygenerowanych obiektów.".into());
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Eksport warstwy drzew (PNG)")
+            .add_filter("PNG", &["png"])
+            .set_file_name("warstwa_drzew.png")
+            .save_file()
+        else {
+            return;
+        };
+        // rozdzielczość = rozmiar mapy w metrach (1 px = 1 m), z ograniczeniem
+        let res = (self.project.map_size_m as u32).clamp(64, 16384);
+        let colors: Vec<[u8; 3]> = self
+            .project
+            .species
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.effective_color(i))
+            .collect();
+        match forest_core::export_trees_png(&self.objects, &self.project, &colors, res, path) {
+            Ok(n) => self.info = Some(format!("Zapisano warstwę drzew ({n} obiektów, {res} px).")),
+            Err(e) => self.error = Some(e),
+        }
+    }
+
     fn save_project(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Projekt DayZForests", &["json"])
@@ -329,6 +373,7 @@ impl ForestApp {
     }
 
     fn load_project(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Projekt DayZForests", &["json"])
             .pick_file()
@@ -350,7 +395,7 @@ impl ForestApp {
                     self.objects.clear();
                     self.stats = None;
                     self.zone_color_edit = None;
-                    self.info = Some(format!("Wczytano projekt: {}", path.display()));
+                    self.info = Some(tf(lang, "Wczytano projekt: {0}", &[path.display().to_string().as_str()]));
                     self.reload_project_files(ctx);
                     self.error = None;
                 }
@@ -455,6 +500,7 @@ impl ForestApp {
     // --- obszary rysowane (poligony) -----------------------------------------
 
     fn finish_area(&mut self) {
+        let lang = self.lang;
         if self.draw_points.len() < 3 {
             self.error = Some("Poligon wymaga >= 3 punktów.".into());
             return;
@@ -479,12 +525,9 @@ impl ForestApp {
             edges: None,
             polygon: std::mem::take(&mut self.draw_points),
         });
-        self.info = Some(format!(
-            "Dodano obszar '{}' ({:.1} ha). Przypisz presety w panelu 📐 Obszary, \
-             aby generował drzewa.",
-            self.project.areas.last().unwrap().label,
-            area_ha
-        ));
+        let area_label = self.project.areas.last().unwrap().label.clone();
+        let ha_str = format!("{:.1}", area_ha);
+        self.info = Some(tf(lang, "Dodano obszar '{0}' ({1:.1} ha). Przypisz presety w panelu 📐 Obszary, aby generował drzewa.", &[area_label.as_str(), ha_str.as_str()]));
     }
 
     fn cancel_drawing(&mut self) {
@@ -542,10 +585,17 @@ fn build_overlay(
     let mx = f64::from(disp_w) / project.map_size_m;
     let my = f64::from(disp_h) / project.map_size_m;
     let stencil = dot_stencil(2.0_f32);
+    // kolory efektywne gatunków (indywidualne lub automatyczne)
+    let colors: Vec<[u8; 3]> = project
+        .species
+        .iter()
+        .enumerate()
+        .map(|(i, s)| s.effective_color(i))
+        .collect();
     for o in objects {
         let px = (o.x * mx) as i64;
         let py = ((project.map_size_m - o.y) * my) as i64;
-        let c = species_preview_color(o.species_index);
+        let c = colors.get(o.species_index).copied().unwrap_or([255; 3]);
         for &(dx, dy) in &stencil {
             let x = px + dx;
             let y = py + dy;
@@ -684,7 +734,7 @@ fn compute_mix_snap(
 /// Pomarańczowy kolor zmienionego ustawienia.
 const ORANGE_MOD: Color32 = Color32::from_rgb(255, 150, 40);
 
-fn lbl_mod(ui: &mut egui::Ui, label: &str, modified: bool) {
+fn lbl_mod(ui: &mut egui::Ui, label: String, modified: bool) {
     if modified {
         ui.colored_label(ORANGE_MOD, label);
     } else {
@@ -714,7 +764,7 @@ fn horiz_tip<R>(
     r.inner
 }
 
-fn setting_bool(ui: &mut egui::Ui, label: &str, tip: &str, v: &mut bool, d: bool) {
+fn setting_bool(ui: &mut egui::Ui, label: String, tip: &str, v: &mut bool, d: bool) {
     ui.horizontal(|ui| {
         let m = *v != d;
         let _ = ui.checkbox(v, label).on_hover_text(tip).changed();
@@ -727,7 +777,7 @@ fn setting_bool(ui: &mut egui::Ui, label: &str, tip: &str, v: &mut bool, d: bool
 #[allow(clippy::too_many_arguments)]
 fn setting_f64(
     ui: &mut egui::Ui,
-    label: &str,
+    label: String,
     tip: &str,
     v: &mut f64,
     d: f64,
@@ -749,7 +799,7 @@ fn setting_f64(
     });
 }
 
-fn setting_u64(ui: &mut egui::Ui, label: &str, v: &mut u64, d: u64) {
+fn setting_u64(ui: &mut egui::Ui, label: String, v: &mut u64, d: u64) {
     ui.horizontal(|ui| {
         let m = *v != d;
         lbl_mod(ui, label, m);
@@ -760,7 +810,7 @@ fn setting_u64(ui: &mut egui::Ui, label: &str, v: &mut u64, d: u64) {
     });
 }
 
-fn setting_u32(ui: &mut egui::Ui, label: &str, v: &mut u32, d: u32, range: std::ops::RangeInclusive<u32>) {
+fn setting_u32(ui: &mut egui::Ui, label: String, v: &mut u32, d: u32, range: std::ops::RangeInclusive<u32>) {
     ui.horizontal(|ui| {
         let m = *v != d;
         lbl_mod(ui, label, m);
@@ -774,7 +824,8 @@ fn setting_u32(ui: &mut egui::Ui, label: &str, v: &mut u32, d: u32, range: std::
 /// Wspólny edytor ustawień granicy (globalnej lub per-obszar).
 /// `d` = wartości odniesienia dla przycisków ⟲.
 fn ui_edge_settings(
-    ui: &mut egui::Ui,
+        ui: &mut egui::Ui,
+        lang: Lang,
     e: &mut EdgeSettings,
     d: &EdgeSettings,
     species: &[forest_core::species::SpeciesDef],
@@ -782,7 +833,7 @@ fn ui_edge_settings(
     let n_species = species.len();
     setting_bool(
         ui,
-        "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)",
+        tr(lang, "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)"),
         "",
         &mut e.enabled,
         d.enabled,
@@ -790,7 +841,7 @@ fn ui_edge_settings(
     ui.add_enabled_ui(e.enabled, |ui| {
         ui.horizontal(|ui| {
             let m = (e.band_width_m - d.band_width_m).abs() > 1e-9;
-            lbl_mod(ui, "Szerokość pasa [m]:", m);
+            lbl_mod(ui, tr(lang, "Szerokość pasa [m]:"), m);
             ui.add(egui::DragValue::new(&mut e.band_width_m).speed(1.0).clamp_range(1.0..=300.0));
             if reset_btn(ui, m) {
                 e.band_width_m = d.band_width_m;
@@ -798,7 +849,7 @@ fn ui_edge_settings(
         });
         ui.horizontal(|ui| {
             let m = (e.density_per_ha - d.density_per_ha).abs() > 1e-9;
-            lbl_mod(ui, "Gęstość [szt/ha]:", m);
+            lbl_mod(ui, tr(lang, "Gęstość [szt/ha]:"), m);
             ui.add(egui::DragValue::new(&mut e.density_per_ha).speed(1.0).clamp_range(1.0..=5000.0));
             if reset_btn(ui, m) {
                 e.density_per_ha = d.density_per_ha;
@@ -807,7 +858,7 @@ fn ui_edge_settings(
         ui.horizontal(|ui| {
             let m = e.blend != d.blend;
             let _ = ui
-                .checkbox(&mut e.blend, "Wtapianie pasa")
+                .checkbox(&mut e.blend, tr(lang, "Wtapianie pasa"))
                 .on_hover_text(
                     "Gęstość zanika wraz z odległością od granicy \
                      (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków",
@@ -823,7 +874,7 @@ fn ui_edge_settings(
              Dotyczy też obrysów poligonów.",
             |ui| {
                 let m = (e.jagged_m - d.jagged_m).abs() > 1e-9;
-                lbl_mod(ui, "Poszarpanie granicy [m]:", m);
+                lbl_mod(ui, tr(lang, "Poszarpanie granicy [m]:"), m);
                 ui.add(egui::DragValue::new(&mut e.jagged_m).speed(1.0).clamp_range(0.0..=200.0));
                 if reset_btn(ui, m) {
                     e.jagged_m = d.jagged_m;
@@ -836,7 +887,7 @@ fn ui_edge_settings(
              Otwarte, naturalne obrzeża lasu.",
             |ui| {
                 let m = (e.blend_inside_m - d.blend_inside_m).abs() > 1e-9;
-                lbl_mod(ui, "Wtapianie w las [m]:", m);
+                lbl_mod(ui, tr(lang, "Wtapianie w las [m]:"), m);
                 ui.add(
                     egui::DragValue::new(&mut e.blend_inside_m)
                         .speed(1.0)
@@ -848,7 +899,7 @@ fn ui_edge_settings(
             },
         );
         ui.horizontal(|ui| {
-            ui.small("Wagi gatunków granicy:");
+            ui.small(tr(lang, "Wagi gatunków granicy:"));
             let m = e.species_weights != d.species_weights;
             if reset_btn(ui, m) {
                 // przywróć domyślne krzewy, odfiltrowując spoza listy gatunków
@@ -862,7 +913,7 @@ fn ui_edge_settings(
         });
         for si in 0..n_species {
             let sp = &species[si];
-            let c = species_preview_color(si);
+            let c = sp.effective_color(si);
             ui.horizontal(|ui| {
                 let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                 ui.painter_at(resp.rect).circle_filled(
@@ -995,6 +1046,8 @@ impl ForestApp {
 
 impl eframe::App for ForestApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let lang = self.lang;
+
         self.poll_generation(ctx);
         self.poll_histogram(ctx);
 
@@ -1007,7 +1060,7 @@ impl eframe::App for ForestApp {
                             .show_percentage()
                             .desired_width(220.0),
                     );
-                    ui.label("Generowanie...");
+                    ui.label(tr(lang, "Generowanie..."));
                 } else if let Some(s) = &self.stats {
                     ui.label(format!(
                         "Obiektów: {} | granica: {} | gatunków >0: {} | {} ms",
@@ -1017,7 +1070,7 @@ impl eframe::App for ForestApp {
                         s.elapsed_ms
                     ));
                 } else {
-                    ui.label("Gotowy.");
+                    ui.label(tr(lang, "Gotowy."));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(e) = &self.error {
@@ -1053,30 +1106,57 @@ impl eframe::App for ForestApp {
 
 impl ForestApp {
     fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
         ui.horizontal_wrapped(|ui| {
-            ui.add_enabled(!self.busy, egui::Button::new("▶ Generuj"))
+            // 🌐 język
+            egui::ComboBox::from_id_source("lang_sel")
+                .selected_text(format!("🌐 {}", lang.name()))
+                .show_ui(ui, |ui| {
+                    for l in Lang::ALL {
+                        let selected = l == lang;
+                        if ui
+                            .selectable_label(selected, format!("🌐 {}", l.name()))
+                            .clicked()
+                            && !selected
+                        {
+                            self.lang = l;
+                            i18n::UiPrefs {
+                                language: l.code().into(),
+                            }
+                            .save(i18n::PREFS_FILE);
+                        }
+                    }
+                });
+            ui.separator();
+            ui.add_enabled(!self.busy, egui::Button::new(tr(lang, "▶ Generuj")))
                 .clicked()
                 .then(|| self.start_generation(ui.ctx()));
             ui.add_enabled(
                 !self.objects.is_empty(),
-                egui::Button::new("💾 Eksport TXT (TB)"),
+                egui::Button::new(tr(lang, "💾 Eksport TXT (TB)")),
             )
             .clicked()
             .then(|| self.export_txt());
+            ui.add_enabled(
+                !self.objects.is_empty(),
+                egui::Button::new(tr(lang, "🖼 Eksport PNG (drzewa)")),
+            )
+            .clicked()
+            .then(|| self.export_trees_png());
             ui.separator();
-            if ui.button("📂 Wczytaj projekt").clicked() {
+            if ui.button(tr(lang, "📂 Wczytaj projekt")).clicked() {
                 self.load_project(ui.ctx());
             }
-            if ui.button("💾 Zapisz projekt").clicked() {
+            if ui.button(tr(lang, "💾 Zapisz projekt")).clicked() {
                 self.save_project();
             }
             ui.separator();
             // obszar powstaje "pusty" — presety przypisuje się w panelu Obszary
             if ui
                 .add(egui::Button::new(if self.draw_mode {
-                    "✏ Rysowanie: WŁ"
+                    tr(lang, "✏ Rysowanie: WŁ")
                 } else {
-                    "✏ Rysuj obszar"
+                    tr(lang, "✏ Rysuj obszar")
                 }))
                 .clicked()
             {
@@ -1101,10 +1181,10 @@ impl ForestApp {
                 }
             }
             ui.separator();
-            ui.checkbox(&mut self.show_sat, "Podkład");
-            ui.checkbox(&mut self.show_mask, "Maska");
-            ui.checkbox(&mut self.show_trees, "Drzewa");
-            if ui.button("Dopasuj widok").clicked() {
+            ui.checkbox(&mut self.show_sat, tr(lang, "Podkład"));
+            ui.checkbox(&mut self.show_mask, tr(lang, "Maska"));
+            ui.checkbox(&mut self.show_trees, tr(lang, "Drzewa"));
+            if ui.button(tr(lang, "Dopasuj widok")).clicked() {
                 self.zoom = 1.0;
                 self.pan = Vec2::ZERO;
             }
@@ -1113,11 +1193,13 @@ impl ForestApp {
     }
 
     fn ui_params(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+
         // Pliki
-        CollapsingHeader::new("📁 Pliki")
+        CollapsingHeader::new(tr(lang, "📁 Pliki"))
             .default_open(true)
             .show(ui, |ui| {
-                if ui.button("Wczytaj maskę (PNG/BMP/TGA)...").clicked() {
+                if ui.button(tr(lang, "Wczytaj maskę (PNG/BMP/TGA)...")).clicked() {
                     if let Some(p) = rfd::FileDialog::new()
                         .add_filter("Obrazy", &["png", "bmp", "tga", "jpg", "jpeg"])
                         .pick_file()
@@ -1125,10 +1207,13 @@ impl ForestApp {
                         self.load_mask(ui.ctx(), &p.to_string_lossy());
                     }
                 }
-                ui.label(self.project.paths.mask.as_deref().unwrap_or("(brak maski)"))
+                ui.label(match self.project.paths.mask.as_deref() {
+                    Some(p) => p.to_string(),
+                    None => tr(lang, "(brak maski)"),
+                })
                     .on_hover_text("Kolory = strefy lasu");
 
-                if ui.button("Wczytaj podkład satelitarny (PNG/JPG)...").clicked() {
+                if ui.button(tr(lang, "Wczytaj podkład satelitarny (PNG/JPG)...")).clicked() {
                     if let Some(p) = rfd::FileDialog::new()
                         .add_filter("Obrazy", &["png", "jpg", "jpeg", "bmp", "tga"])
                         .pick_file()
@@ -1137,13 +1222,13 @@ impl ForestApp {
                     }
                 }
                 ui.horizontal(|ui| {
-                    ui.label("Krycie podkładu:");
+                    ui.label(tr(lang, "Krycie podkładu:"));
                     ui.add(
-                        egui::Slider::new(&mut self.sat_alpha, 0.0..=1.0).text(if self.sat_tex.is_some() { "" } else { "(brak)" }),
+                        egui::Slider::new(&mut self.sat_alpha, 0.0..=1.0).text(if self.sat_tex.is_some() { "".to_string() } else { tr(lang, "(brak)") }),
                     );
                 });
 
-                if ui.button("Wczytaj heightmapę (.asc)...").clicked() {
+                if ui.button(tr(lang, "Wczytaj heightmapę (.asc)...")).clicked() {
                     if let Some(p) = rfd::FileDialog::new()
                         .add_filter("ESRI ASCII Grid", &["asc"])
                         .pick_file()
@@ -1159,7 +1244,7 @@ impl ForestApp {
                         .unwrap_or("(brak — elevation=0, obiekty na terenie)"),
                 );
 
-                if ui.button("Wczytaj wykluczenia (.geojson)...").clicked() {
+                if ui.button(tr(lang, "Wczytaj wykluczenia (.geojson)...")).clicked() {
                     if let Some(p) = rfd::FileDialog::new()
                         .add_filter("GeoJSON", &["geojson", "json"])
                         .pick_file()
@@ -1182,14 +1267,14 @@ impl ForestApp {
             });
 
         // Mapa
-        CollapsingHeader::new("🗺 Mapa / eksport")
+        CollapsingHeader::new(tr(lang, "🗺 Mapa / eksport"))
             .default_open(true)
             .show(ui, |ui| {
                 let d = ForestProject::default();
                 let p = &mut self.project;
                 ui.horizontal(|ui| {
                     let m = (p.map_size_m - d.map_size_m).abs() > 1e-9;
-                    lbl_mod(ui, "Rozmiar [m]:", m);
+                    lbl_mod(ui, tr(lang, "Rozmiar [m]:"), m);
                     ui.add(egui::DragValue::new(&mut p.map_size_m).speed(10.0));
                     if reset_btn(ui, m) {
                         p.map_size_m = d.map_size_m;
@@ -1197,7 +1282,7 @@ impl ForestApp {
                 });
                 ui.horizontal(|ui| {
                     let m = (p.easting_offset - d.easting_offset).abs() > 1e-9;
-                    lbl_mod(ui, "Easting offset:", m);
+                    lbl_mod(ui, tr(lang, "Easting offset:"), m);
                     ui.add(egui::DragValue::new(&mut p.easting_offset).speed(100.0));
                     if reset_btn(ui, m) {
                         p.easting_offset = d.easting_offset;
@@ -1205,31 +1290,31 @@ impl ForestApp {
                 });
                 ui.horizontal(|ui| {
                     let m = (p.northing_offset - d.northing_offset).abs() > 1e-9;
-                    lbl_mod(ui, "Northing offset:", m);
+                    lbl_mod(ui, tr(lang, "Northing offset:"), m);
                     ui.add(egui::DragValue::new(&mut p.northing_offset).speed(100.0));
                     if reset_btn(ui, m) {
                         p.northing_offset = d.northing_offset;
                     }
                 });
-                setting_u64(ui, "Ziarno (seed):", &mut p.seed, d.seed);
+                setting_u64(ui, tr(lang, "Ziarno (seed):"), &mut p.seed, d.seed);
                 ui.horizontal(|ui| {
                     let m = p.elevation_mode != d.elevation_mode;
-                    lbl_mod(ui, "Wysokość:", m);
+                    lbl_mod(ui, tr(lang, "Wysokość:"), m);
                     egui::ComboBox::from_id_source("elev_mode")
                         .selected_text(match p.elevation_mode {
-                            ElevationMode::RelativeZero => "relative (0)",
-                            ElevationMode::AbsoluteSampled => "absolute (z ASC)",
+                            ElevationMode::RelativeZero => tr(lang, "relative (0)"),
+                            ElevationMode::AbsoluteSampled => tr(lang, "absolute (z ASC)"),
                         })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut p.elevation_mode,
                                 ElevationMode::RelativeZero,
-                                "relative (0)",
+                                tr(lang, "relative (0)"),
                             );
                             ui.selectable_value(
                                 &mut p.elevation_mode,
                                 ElevationMode::AbsoluteSampled,
-                                "absolute (z ASC)",
+                                tr(lang, "absolute (z ASC)"),
                             );
                         });
                     if reset_btn(ui, m) {
@@ -1239,27 +1324,27 @@ impl ForestApp {
             });
 
         // Źródła generowania
-        CollapsingHeader::new("⚙ Źródła generowania")
+        CollapsingHeader::new(tr(lang, "⚙ Źródła generowania"))
             .default_open(true)
             .show(ui, |ui| {
                 let d = ForestProject::default();
                 setting_bool(
                     ui,
-                    "Strefy z maski (kolory)",
+                    tr(lang, "Strefy z maski (kolory)"),
                     "Generuj w obszarach wskazanych kolorami maski",
                     &mut self.project.use_mask_zones,
                     d.use_mask_zones,
                 );
                 setting_bool(
                     ui,
-                    "Obszary rysowane (poligony)",
+                    tr(lang, "Obszary rysowane (poligony)"),
                     "Generuj wewnątrz narysowanych poligonów",
                     &mut self.project.use_areas,
                     d.use_areas,
                 );
                 setting_bool(
                     ui,
-                    "Granica lasu (krzewy)",
+                    tr(lang, "Granica lasu (krzewy)"),
                     "Pas krzewów/podrostu wzdłuż krawędzi lasu (parametry w sekcji 🧱)",
                     &mut self.project.edges.enabled,
                     false,
@@ -1281,16 +1366,16 @@ impl ForestApp {
 
 
         // Granica lasu (krzewy/podrost)
-        CollapsingHeader::new("🧱 Granica lasu")
+        CollapsingHeader::new(tr(lang, "🧱 Granica lasu"))
             .default_open(false)
             .show(ui, |ui| {
                 let d_edges = EdgeSettings::default();
                 let species_snap = self.project.species.clone();
-                ui_edge_settings(ui, &mut self.project.edges, &d_edges, &species_snap);
+                ui_edge_settings(ui, self.lang, &mut self.project.edges, &d_edges, &species_snap);
             });
 
         // Wycinanie po kolorach maski (+ bufor) — usuwa wygenerowane obiekty
-        CollapsingHeader::new("✂ Wycinanie (kolor + bufor)")
+        CollapsingHeader::new(tr(lang, "✂ Wycinanie (kolor + bufor)"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.small(
@@ -1302,7 +1387,7 @@ impl ForestApp {
                 let d = ForestProject::default();
                 let p = &mut self.project;
                 if p.cut_zones.is_empty() {
-                    ui.small("Brak stref wycinania.");
+                    ui.small(tr(lang, "Brak stref wycinania."));
                 }
                 let mut to_remove: Option<usize> = None;
                 for (ci, cz) in p.cut_zones.iter_mut().enumerate() {
@@ -1313,7 +1398,7 @@ impl ForestApp {
                         ui.painter_at(resp.rect)
                             .rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
                         ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
-                        ui.label("Bufor [m]:");
+                        ui.label(tr(lang, "Bufor [m]:"));
                         ui.add(
                             egui::DragValue::new(&mut cz.margin_m)
                                 .speed(1.0)
@@ -1330,7 +1415,7 @@ impl ForestApp {
 
                 // dodawanie z kolorów maski
                 if let Some(m) = &self.mask {
-                    ui.small("Dodaj strefę z koloru maski:");
+                    ui.small(tr(lang, "Dodaj strefę z koloru maski:"));
                     let hist = m.color_histogram(256);
                     let used: Vec<Rgb8> =
                         p.cut_zones.iter().map(|c| c.color).collect();
@@ -1360,18 +1445,18 @@ impl ForestApp {
             });
 
         // Filtry
-        CollapsingHeader::new("⛰ Filtry środowiskowe")
+        CollapsingHeader::new(tr(lang, "⛰ Filtry środowiskowe"))
             .default_open(false)
             .show(ui, |ui| {
                 let d = ForestProject::default();
                 let p = &mut self.project;
-                opt_f64(ui, "Min. wysokość [m]", &mut p.min_altitude, -1.0..=8000.0, d.min_altitude);
-                opt_f64(ui, "Maks. wysokość [m]", &mut p.max_altitude, -1.0..=8000.0, d.max_altitude);
-                opt_f64(ui, "Maks. spadek [°]", &mut p.max_slope_deg, 0.0..=90.0, d.max_slope_deg);
-                setting_u32(ui, "Tolerancja koloru:", &mut p.color_tolerance, d.color_tolerance, 0..=255);
+                opt_f64(ui, tr(lang, "Min. wysokość [m]"), &mut p.min_altitude, -1.0..=8000.0, d.min_altitude);
+                opt_f64(ui, tr(lang, "Maks. wysokość [m]"), &mut p.max_altitude, -1.0..=8000.0, d.max_altitude);
+                opt_f64(ui, tr(lang, "Maks. spadek [°]"), &mut p.max_slope_deg, 0.0..=90.0, d.max_slope_deg);
+                setting_u32(ui, tr(lang, "Tolerancja koloru:"), &mut p.color_tolerance, d.color_tolerance, 0..=255);
                 setting_f64(
                     ui,
-                    "Margines krawędzi [m]:",
+                    tr(lang, "Margines krawędzi [m]:"),
                     "",
                     &mut p.edge_padding_m,
                     d.edge_padding_m,
@@ -1381,7 +1466,7 @@ impl ForestApp {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let m = p.exclusion_colors != d.exclusion_colors;
-                    lbl_mod(ui, "Kolory wykluczone (np. drogi/woda):", m);
+                    lbl_mod(ui, tr(lang, "Kolory wykluczone (np. drogi/woda):"), m);
                     if reset_btn(ui, m) {
                         p.exclusion_colors = d.exclusion_colors.clone();
                     }
@@ -1404,7 +1489,7 @@ impl ForestApp {
                 if self.mask.is_some() {
                     match &self.histogram {
                         None => {
-                            ui.small("Analizuję kolory maski...");
+                            ui.small(tr(lang, "Analizuję kolory maski..."));
                         }
                         Some(hist) => {
                             let cands: Vec<(Rgb8, usize)> = hist
@@ -1450,14 +1535,14 @@ impl ForestApp {
             });
 
         // Rozrzut
-        CollapsingHeader::new("🎲 Rozrzut / polany")
+        CollapsingHeader::new(tr(lang, "🎲 Rozrzut / polany"))
             .default_open(false)
             .show(ui, |ui| {
                 let d = ForestProject::default();
                 let p = &mut self.project;
                 horiz_tip(ui, ">1 = rzadszy las", |ui| {
                     let m = (p.spacing_multiplier - d.spacing_multiplier).abs() > 1e-9;
-                    lbl_mod(ui, "Mnożnik odstępów:", m);
+                    lbl_mod(ui, tr(lang, "Mnożnik odstępów:"), m);
                     ui.add(egui::DragValue::new(&mut p.spacing_multiplier).speed(0.02).clamp_range(0.05..=5.0));
                     if reset_btn(ui, m) {
                         p.spacing_multiplier = d.spacing_multiplier;
@@ -1465,7 +1550,7 @@ impl ForestApp {
                 });
                 horiz_tip(ui, "Długość fali szumu polan; 0 = wyłączone", |ui| {
                     let m = (p.clearing_scale_m - d.clearing_scale_m).abs() > 1e-9;
-                    lbl_mod(ui, "Skala polan [m]:", m);
+                    lbl_mod(ui, tr(lang, "Skala polan [m]:"), m);
                     ui.add(egui::DragValue::new(&mut p.clearing_scale_m).speed(5.0).clamp_range(0.0..=5000.0));
                     if reset_btn(ui, m) {
                         p.clearing_scale_m = d.clearing_scale_m;
@@ -1473,7 +1558,7 @@ impl ForestApp {
                 });
                 horiz_tip(ui, "Jaka część obszaru ma być prześwitem", |ui| {
                     let m = (p.clearing_strength - d.clearing_strength).abs() > 1e-9;
-                    lbl_mod(ui, "Siła polan:", m);
+                    lbl_mod(ui, tr(lang, "Siła polan:"), m);
                     ui.add(egui::Slider::new(&mut p.clearing_strength, 0.0..=0.9));
                     if reset_btn(ui, m) {
                         p.clearing_strength = d.clearing_strength;
@@ -1482,7 +1567,7 @@ impl ForestApp {
             });
 
         // Gatunki
-        CollapsingHeader::new("🌳 Gatunki")
+        CollapsingHeader::new(tr(lang, "🌳 Gatunki"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -1513,7 +1598,7 @@ impl ForestApp {
                             Err(e) => self.error = Some(e),
                         }
                     }
-                    ui.small("TB wymaga wpisu w Template Library dla każdego modelu.");
+                    ui.small(tr(lang, "TB wymaga wpisu w Template Library dla każdego modelu."));
                 });
                 ui.separator();
                 let mut remove: Option<usize> = None;
@@ -1532,14 +1617,67 @@ impl ForestApp {
                     }
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            let c = species_preview_color(i);
+                            let c = sp.effective_color(i);
                             let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                             ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, Color32::from_rgb(c[0], c[1], c[2]));
-                            ui.text_edit_singleline(&mut sp.label);
+ui.text_edit_singleline(&mut sp.label);
+                            // kolor: własny (picker) lub z maski
+                            if ui
+                                .add(egui::Button::new("🎨").min_size(Vec2::splat(20.0)))
+                                .on_hover_text("Kolor gatunku (własny lub z maski)")
+                                .clicked()
+                            {
+                                self.species_color_edit = if self.species_color_edit == Some(i) {
+                                    None
+                                } else {
+                                    Some(i)
+                                };
+                            }
                             if ui.button("✖").on_hover_text("Usuń gatunek").clicked() {
                                 remove = Some(i);
                             }
                         });
+                        if self.species_color_edit == Some(i) {
+                            ui.indent(format!("spcol{i}"), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.small("Kolor własny:");
+                                    let mut rgb = sp.color.unwrap_or(Rgb8([255, 255, 255]));
+                                    if ui.color_edit_button_srgb(&mut rgb.0).changed() {
+                                        sp.color = Some(rgb);
+                                    }
+                                });
+                                ui.small("Kolor z maski:");
+                                if let Some(m) = &self.mask {
+                                    let hist = m.color_histogram(256);
+                                    egui::Grid::new(format!("spcol_grid{i}"))
+                                        .num_columns(8)
+                                        .show(ui, |ui| {
+                                            for (c, n) in hist.iter().take(24) {
+                                                let cc = c.0;
+                                                let (_rect, resp) = ui
+                                                    .allocate_exact_size(
+                                                        Vec2::splat(18.0),
+                                                        Sense::click(),
+                                                    );
+                                                ui.painter_at(resp.rect).rect_filled(
+                                                    resp.rect,
+                                                    2.0,
+                                                    Color32::from_rgb(cc[0], cc[1], cc[2]),
+                                                );
+                                                if resp.clicked() {
+                                                    sp.color = Some(*c);
+                                                }
+                                                ui.weak(format!("{}", n));
+                                            }
+                                        });
+                                } else {
+                                    ui.small("(wczytaj maskę, aby wybierać kolory)");
+                                }
+                                if ui.small_button("⟲ auto").clicked() {
+                                    sp.color = None;
+                                }
+                            });
+                        }
                         ui.horizontal(|ui| {
                             ui.label("Model TB:");
                             ui.text_edit_singleline(&mut sp.model);
@@ -1556,6 +1694,7 @@ impl ForestApp {
                 }
                 if let Some(i) = remove {
                     self.project.species.remove(i);
+                    self.species_color_edit = None;
                     for z in &mut self.project.zones {
                         z.species_weights.retain(|(si, _)| *si != i);
                         for (si, _) in z.species_weights.iter_mut() {
@@ -1580,9 +1719,11 @@ impl ForestApp {
     // --- prawy panel: presety i wygenerowane warstwy ----------------------------
 
     fn ui_presets_layers(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+
         ScrollArea::vertical().show(ui, |ui| {
         // 📊 Wynik generowania
-        CollapsingHeader::new("📊 Wygenerowane warstwy")
+        CollapsingHeader::new(tr(lang, "📊 Wygenerowane warstwy"))
             .default_open(true)
             .show(ui, |ui| {
                 match &self.stats {
@@ -1593,7 +1734,7 @@ impl ForestApp {
                         ));
                         ui.separator();
                         if s.per_source.is_empty() {
-                            ui.small("(brak źródeł)");
+                            ui.small(tr(lang, "(brak źródeł)"));
                         }
                         for (n, cnt) in &s.per_source {
                             ui.horizontal(|ui| {
@@ -1620,7 +1761,7 @@ impl ForestApp {
             });
 
         // Strefy
-        CollapsingHeader::new("🌲 Strefy lasu")
+        CollapsingHeader::new(tr(lang, "🌲 Strefy lasu"))
             .default_open(true)
             .show(ui, |ui| {
                 // --- presety roślinności (pogrupowane) ----------------------
@@ -1714,7 +1855,7 @@ impl ForestApp {
                                 if self.zone_color_edit == Some(zi) { None } else { Some(zi) };
                         }
                         ui.text_edit_singleline(&mut z.label);
-                        if ui.button("✖").on_hover_text("Usuń strefę").clicked() {
+                        if ui.button("✖").on_hover_text(tr(lang, "Usuń strefę")).clicked() {
                             to_remove = Some(zi);
                         }
                     });
@@ -1742,7 +1883,7 @@ impl ForestApp {
                                 }
                             });
                             ui.horizontal(|ui| {
-                                ui.small("RGB ręcznie:");
+                                ui.small(tr(lang, "RGB ręcznie:"));
                                 for ch in 0..3usize {
                                     let mut v = z.color.0[ch];
                                     if ui
@@ -1799,17 +1940,17 @@ impl ForestApp {
                     });
 
                     ui.horizontal(|ui| {
-                        ui.label("Gęstość [szt/ha]:");
+                        ui.label(tr(lang, "Gęstość [szt/ha]:"));
                         ui.add(egui::DragValue::new(&mut z.density_per_ha).speed(1.0).clamp_range(1.0..=5000.0));
                     });
                     ui.indent(format!("zw{zi}"), |ui| {
-                        ui.small("Wagi gatunków:");
+                        ui.small(tr(lang, "Wagi gatunków:"));
                         let mut changed = false;
                         for wi in 0..z.species_weights.len() {
                             let (si, _) = z.species_weights[wi];
                             let Some(sp) = self.project.species.get(si) else { continue };
                             ui.horizontal(|ui| {
-                                let c = species_preview_color(si);
+                                let c = sp.effective_color(si);
                                 let (_r, resp) =
                                     ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                                 ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, Color32::from_rgb(c[0], c[1], c[2]));
@@ -1833,10 +1974,10 @@ impl ForestApp {
                 }
 
                 if self.mask.is_some() {
-                    ui.small("Dodaj strefę z koloru maski:");
+                    ui.small(tr(lang, "Dodaj strefę z koloru maski:"));
                     match &self.histogram {
                         None => {
-                            ui.small("Analizuję kolory maski...");
+                            ui.small(tr(lang, "Analizuję kolory maski..."));
                             ui.ctx()
                                 .request_repaint_after(std::time::Duration::from_millis(150));
                         }
@@ -1871,7 +2012,7 @@ impl ForestApp {
                                                 );
                                                 ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
                                                 ui.weak(format!("{n} px"));
-                                                if ui.button("+ Dodaj strefę").clicked() {
+                                                if ui.button(tr(lang, "+ Dodaj strefę")).clicked() {
                                                     self.add_zone_from_color(c);
                                                 }
                                             });
@@ -1887,11 +2028,11 @@ impl ForestApp {
 
 
         // Moje presety — edytowalne szablony stref (zapisywane do JSON)
-        CollapsingHeader::new("📚 Moje presety")
+        CollapsingHeader::new(tr(lang, "📚 Moje presety"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button("+ Nowy pusty preset").clicked() {
+                    if ui.button(tr(lang, "+ Nowy pusty preset")).clicked() {
                         self.user_presets.push(UserPreset {
                             group: "Moje".into(),
                             name: format!("Mój preset {}", self.user_presets.len() + 1),
@@ -1903,11 +2044,11 @@ impl ForestApp {
                         self.preset_edit_open = Some(self.user_presets.len() - 1);
                         self.presets_dirty = true;
                     }
-                    if ui.button("💾 Zapisz").clicked() {
+                    if ui.button(tr(lang, "💾 Zapisz")).clicked() {
                         self.save_user_presets();
                     }
                     if self.presets_dirty {
-                        ui.colored_label(Color32::YELLOW, "• niezapisane");
+                        ui.colored_label(Color32::YELLOW, tr(lang, "• niezapisane"));
                     }
                 });
                 ui.small(format!("Plik: {} (katalog roboczy programu)", DEFAULT_PRESETS_FILE));
@@ -1942,7 +2083,7 @@ impl ForestApp {
                     ui.horizontal(|ui| {
                         if ui
                             .button(if editing { "▾" } else { "✎" })
-                            .on_hover_text("Edytuj preset")
+                            .on_hover_text(tr(lang, "Edytuj preset"))
                             .clicked()
                         {
                             self.preset_edit_open =
@@ -1950,24 +2091,24 @@ impl ForestApp {
                         }
                         ui.text_edit_singleline(&mut p.name);
                         if ui
-                            .button("+ Strefa")
+                            .button(tr(lang, "+ Strefa"))
                             .on_hover_text("Dodaj strefę z tego presetu")
                             .clicked()
                         {
                             pending_add = Some(i);
                         }
                         let _ = &snap_for_actions;
-                        if ui.button("⧉").on_hover_text("Duplikuj").clicked() {
+                        if ui.button("⧉").on_hover_text(tr(lang, "Duplikuj")).clicked() {
                             pending_dup = Some(i);
                         }
-                        if ui.button("🗑").on_hover_text("Usuń preset").clicked() {
+                        if ui.button("🗑").on_hover_text(tr(lang, "Usuń preset")).clicked() {
                             to_remove = Some(i);
                         }
                     });
                     ui.horizontal(|ui| {
-                        ui.label("Grupa:");
+                        ui.label(tr(lang, "Grupa:"));
                         ui.add(egui::TextEdit::singleline(&mut p.group).desired_width(110.0));
-                        ui.label("Gęstość [szt/ha]:");
+                        ui.label(tr(lang, "Gęstość [szt/ha]:"));
                         ui.add(
                             egui::DragValue::new(&mut p.density_per_ha)
                                 .speed(1.0)
@@ -1980,7 +2121,7 @@ impl ForestApp {
                             ui.small("Wagi gatunków (zapisywane po nazwie modelu):");
                             for si in 0..n_species {
                                 let Some(sp) = self.project.species.get(si) else { continue };
-                                let c = species_preview_color(si);
+                                let c = sp.effective_color(si);
                                 ui.horizontal(|ui| {
                                     let (_r, resp) = ui
                                         .allocate_exact_size(Vec2::splat(10.0), Sense::hover());
@@ -2056,7 +2197,7 @@ impl ForestApp {
 
 
         // Obszary rysowane (poligony) — alternatywa dla maski
-        CollapsingHeader::new("📐 Obszary (poligony)")
+        CollapsingHeader::new(tr(lang, "📐 Obszary (poligony)"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.small(format!(
@@ -2078,12 +2219,12 @@ impl ForestApp {
                             let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                             ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, col);
                             ui.text_edit_singleline(&mut a.label);
-                            if ui.button("✖").on_hover_text("Usuń obszar").clicked() {
+                            if ui.button("✖").on_hover_text(tr(lang, "Usuń obszar")).clicked() {
                                 to_remove = Some(ai);
                             }
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Gęstość [szt/ha]:");
+                            ui.label(tr(lang, "Gęstość [szt/ha]:"));
                             ui.add(
                                 egui::DragValue::new(&mut a.density_per_ha)
                                     .speed(1.0)
@@ -2141,7 +2282,7 @@ impl ForestApp {
                         // granica tego obszaru (nadpisuje globalną)
                         let mut own = a.edges.is_some();
                         if ui
-                            .checkbox(&mut own, "Własna granica")
+                            .checkbox(&mut own, tr(lang, "Własna granica"))
                             .on_hover_text(
                                 "Nadpisuje globalne ustawienia granicy dla tego obszaru",
                             )
@@ -2157,7 +2298,7 @@ impl ForestApp {
                             Some(ge) => {
                                 ui.indent(format!("aedge{ai}"), |ui| {
                                     ui.small("⟲ przywraca wartości z globalnej granicy");
-                                    ui_edge_settings(ui, ge, &global_edges_snap, &species_snap_a);
+                                    ui_edge_settings(ui, self.lang, ge, &global_edges_snap, &species_snap_a);
                                 });
                             }
                             None => {
@@ -2174,7 +2315,7 @@ impl ForestApp {
                     self.project.areas.remove(i);
                 }
                 if !self.project.areas.is_empty()
-                    && ui.button("Wyczyść wszystkie obszary").clicked()
+                    && ui.button(tr(lang, "Wyczyść wszystkie obszary")).clicked()
                 {
                     self.project.areas.clear();
                 }
@@ -2185,15 +2326,17 @@ impl ForestApp {
     }    // --- kanvas -------------------------------------------------------------
 
     fn ui_canvas(&mut self, ui: &mut egui::Ui) {
+        let lang = self.lang;
+
         if self.mask.is_none() && self.project.areas.is_empty() && !self.draw_mode {
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
                     ui.heading("DayZ Forest Generator");
                     ui.add_space(12.0);
-                    ui.label("1. Wczytaj maskę PNG (kolory = strefy lasu)");
-                    ui.label("2. ...albo narysuj obszary: wybierz preset i klikaj wierzchołki na mapie");
-                    ui.label("3. Opcjonalnie: heightmapa .asc, wykluczenia .geojson, granice lasu");
-                    ui.label("4. Generuj → Eksport TXT → import w Terrain Builderze");
+                    ui.label(tr(lang, "1. Wczytaj maskę PNG (kolory = strefy lasu)"));
+                    ui.label(tr(lang, "2. ...albo narysuj obszary: wybierz preset i klikaj wierzchołki na mapie"));
+                    ui.label(tr(lang, "3. Opcjonalnie: heightmapa .asc, wykluczenia .geojson, granice lasu"));
+                    ui.label(tr(lang, "4. Generuj → Eksport TXT → import w Terrain Builderze"));
                 });
             });
             return;
@@ -2452,7 +2595,7 @@ fn clamp_pan_to_view(rect: Rect, mapf: f32, scale: f32, pan: Vec2) -> Vec2 {
 
 fn opt_f64(
     ui: &mut egui::Ui,
-    label: &str,
+    label: String,
     val: &mut Option<f64>,
     range: std::ops::RangeInclusive<f64>,
     default: Option<f64>,

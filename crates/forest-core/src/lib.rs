@@ -13,6 +13,6 @@ pub mod scatter;
 pub mod species;
 pub mod user_presets;
 
-pub use export_tb::write_tb_txt;
+pub use export_tb::{write_tb_file, write_tb_txt, export_trees_png};
 pub use preset::ForestProject;
 pub use scatter::{generate, GenStats, PlacedObject};

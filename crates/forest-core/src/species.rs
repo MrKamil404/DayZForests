@@ -22,6 +22,9 @@ pub struct SpeciesDef {
     /// Grupa (do pogrupowanego widoku w UI), np. "Liściaste".
     #[serde(default)]
     pub group: String,
+    /// Indywidualny kolor gatunku (None = automatyczny z palety).
+    #[serde(default)]
+    pub color: Option<crate::mask::Rgb8>,
 }
 
 impl SpeciesDef {
@@ -33,6 +36,7 @@ impl SpeciesDef {
             scale_max,
             tilt_max_deg: 2.0,
             group: String::new(),
+            color: None,
         }
     }
 
@@ -40,6 +44,14 @@ impl SpeciesDef {
         Self {
             group: group.to_string(),
             ..Self::new(label, model, smin, smax)
+        }
+    }
+
+    /// Efektywny kolor podglądu gatunku.
+    pub fn effective_color(&self, index: usize) -> [u8; 3] {
+        match self.color {
+            Some(c) => c.0,
+            None => species_preview_color(index),
         }
     }
 }

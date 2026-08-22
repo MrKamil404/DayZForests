@@ -46,6 +46,62 @@ pub fn write_tb_file(
     write_tb_txt(objects, project, &mut buf).map_err(|e| format!("Zapis TXT: {e}"))
 }
 
+/// Eksportuje warstwę drzew jako przezroczysty PNG (rozdzielczość `res`x`res`).
+/// `colors[i]` = kolor gatunku o indeksie `i`. Zwraca liczbę narysowanych obiektów.
+pub fn export_trees_png(
+    objects: &[PlacedObject],
+    project: &ForestProject,
+    colors: &[[u8; 3]],
+    res: u32,
+    path: impl AsRef<std::path::Path>,
+) -> Result<u32, String> {
+    if res == 0 {
+        return Err("Rozdzielczość musi być > 0".into());
+    }
+    let mut rgba = vec![0u8; (res as usize) * (res as usize) * 4];
+    let map = project.map_size_m;
+    let sx = f64::from(res) / map;
+    let sy = f64::from(res) / map;
+
+    // promień punktu ~1.5 px, nie mniejszy niż 1
+    let r = ((res as f64 / map) * 1.5).round().max(1.0);
+    let ri = r.ceil() as i64;
+    let r2 = r * r;
+
+    let mut drawn: u32 = 0;
+    for o in objects {
+        let px = (o.x * sx) as i64;
+        let py = ((map - o.y) * sy) as i64;
+        let c = colors.get(o.species_index).copied().unwrap_or([255, 255, 255]);
+        for dy in -ri..=ri {
+            for dx in -ri..=ri {
+                if ((dx * dx + dy * dy) as f64) <= r2 + 0.25 {
+                    let x = px + dx;
+                    let y = py + dy;
+                    if x >= 0 && y >= 0 && (x as u32) < res && (y as u32) < res {
+                        let idx = ((y as usize) * (res as usize) + (x as usize)) * 4;
+                        rgba[idx] = c[0];
+                        rgba[idx + 1] = c[1];
+                        rgba[idx + 2] = c[2];
+                        rgba[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+        drawn += 1;
+    }
+
+    image::save_buffer(
+        path,
+        &rgba,
+        res,
+        res,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|e| format!("Zapis PNG: {e}"))?;
+    Ok(drawn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +164,30 @@ mod tests {
         let parts: Vec<&str> = s.trim_end().split(';').collect();
         assert_eq!(parts[1], "200001.000000");
         assert_eq!(parts[2], "500002.000000");
+    }
+
+    #[test]
+    fn trees_png_transparent_with_colored_dots() {
+        let proj = ForestProject {
+            map_size_m: 1000.0,
+            zones: vec![ZoneDef { color: Rgb8([0,0,0]), ..Default::default() }],
+            ..Default::default()
+        };
+        let objs = vec![
+            PlacedObject { model: "a".into(), x: 500.0, y: 500.0, yaw: 0.0, pitch: 0.0, roll: 0.0, scale: 1.0, elevation: 0.0, zone_index: 0, species_index: 0 },
+        ];
+        let colors = [[255, 0, 0]];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trees.png");
+        let n = export_trees_png(&objs, &proj, &colors, 100, &path).unwrap();
+        assert_eq!(n, 1);
+
+        let img = image::open(&path).unwrap().to_rgba8();
+        assert_eq!((img.width(), img.height()), (100, 100));
+        // środek ma czerwoną kropkę, a daleki róg jest przezroczysty (alpha=0)
+        let center = img.get_pixel(50, 50);
+        assert_eq!([center[0], center[1], center[2], center[3]], [255, 0, 0, 255]);
+        let corner = img.get_pixel(5, 5);
+        assert_eq!(corner[3], 0);
     }
 }
