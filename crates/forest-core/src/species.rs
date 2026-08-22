@@ -377,6 +377,21 @@ pub fn vanilla_library() -> Vec<SpeciesDef> {
     t("Jarzębina 2s", "t_sorbus_2s", 0.9, 1.15, L);
     t("town 1s", "t_town_1s", 0.85, 1.15, L);
     t("town 1sb", "t_town_1sb", 0.85, 1.15, L);
+    // posortuj wg grupy dla spójnego wyświetlania (Iglaste/Liściaste/Krzewy + DLC)
+    v.sort_by(|a, b| {
+        let order = |g: &str| match g {
+            "Iglaste" => 0,
+            "Liściaste" => 1,
+            "Krzewy" => 2,
+            "Bliss (lato)" => 3,
+            "Sakhal (zima/mrok)" => 4,
+            _ => 99,
+        };
+        order(&a.group)
+            .cmp(&order(&b.group))
+            .then_with(|| a.group.cmp(&b.group))
+            .then_with(|| a.label.cmp(&b.label))
+    });
     v
 }
 
@@ -494,7 +509,7 @@ impl ZonePreset {
 /// Indeksy gatunków wg `vanilla_library()` powyżej.
 pub fn zone_presets() -> Vec<ZonePreset> {
     use ZonePreset as P;
-    vec![
+    let mut v = vec![
         // --- Iglaste -----------------------------------------------------
         P { group: "Iglaste", name: "Bór świerkowy (góry)", density_per_ha: 260.0,
             weights: &[(13, 5.0), (12, 3.0), (16, 1.0), (11, 1.0)] },
@@ -528,7 +543,23 @@ pub fn zone_presets() -> Vec<ZonePreset> {
         P { group: "Sakhal (zima/mrok)", name: "Mroczny bór świerkowy", density_per_ha: 260.0, weights: &[(63, 4.0), (64, 3.0), (61, 1.0)] },
         P { group: "Krzewy i zarośla", name: "Zarośla zimowe", density_per_ha: 350.0, weights: &[(68, 3.0), (68, 2.0), (61, 1.0)] },
         P { group: "Mieszane", name: "Mieszany las letni", density_per_ha: 210.0, weights: &[(86, 3.0), (121, 2.0), (59, 1.0)] },
-    ]
+    ];
+    v.sort_by(|a, b| {
+        let order = |g: &str| match g {
+            "Iglaste" => 0,
+            "Liściaste" => 1,
+            "Mieszane" => 2,
+            "Krzewy i zarośla" => 3,
+            "Bliss (lato)" => 4,
+            "Sakhal (zima/mrok)" => 5,
+            _ => 99,
+        };
+        order(a.group)
+            .cmp(&order(b.group))
+            .then_with(|| a.group.cmp(b.group))
+            .then_with(|| a.name.cmp(b.name))
+    });
+    v
 }
 
 pub fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [u8; 3] {

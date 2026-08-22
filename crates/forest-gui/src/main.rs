@@ -46,6 +46,8 @@ type GenRx = Receiver<Result<(Vec<PlacedObject>, GenStats), String>>;
 
 struct ForestApp {
     project: ForestProject,
+    project_path: Option<std::path::PathBuf>,
+    last_autosave: Option<std::time::Instant>,
     mask: Option<Arc<MaskImage>>,
     heightmap: Option<Arc<AscHeightmap>>,
     exclusions: Option<Arc<GeoJsonData>>,
@@ -117,6 +119,8 @@ impl ForestApp {
     fn new() -> Self {
         Self {
             project: ForestProject::default(),
+            project_path: None,
+            last_autosave: None,
             mask: None,
             heightmap: None,
             exclusions: None,
@@ -378,6 +382,18 @@ impl ForestApp {
     }
 
     fn save_project(&mut self) {
+        // autosave: jeśli projekt ma już ścieżkę, zapisz bez dialogu
+        if let Some(path) = self.project_path.clone() {
+            match self.project.save(&path) {
+                Ok(()) => {
+                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
+                    self.last_autosave = Some(std::time::Instant::now());
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(e),
+            }
+            return;
+        }
         if let Some(path) = rfd::FileDialog::new()
             .add_filter("Projekt DayZForests", &["json"])
             .set_file_name("projekt_lasu.json")
@@ -385,7 +401,31 @@ impl ForestApp {
         {
             let path = with_extension(path, "json");
             match self.project.save(&path) {
-                Ok(()) => self.info = Some(format!("Zapisano projekt: {}", path.display())),
+                Ok(()) => {
+                    self.project_path = Some(path.clone());
+                    self.last_autosave = Some(std::time::Instant::now());
+                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
+                    self.error = None;
+                }
+                Err(e) => self.error = Some(e),
+            }
+        }
+    }
+
+    fn save_project_as(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Projekt DayZForests", &["json"])
+            .set_file_name("projekt_lasu.json")
+            .save_file()
+        {
+            let path = with_extension(path, "json");
+            match self.project.save(&path) {
+                Ok(()) => {
+                    self.project_path = Some(path.clone());
+                    self.last_autosave = Some(std::time::Instant::now());
+                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
+                    self.error = None;
+                }
                 Err(e) => self.error = Some(e),
             }
         }
@@ -401,6 +441,8 @@ impl ForestApp {
                 Ok(mut p) => {
                     p.sanitize();
                     self.project = p;
+                    self.project_path = Some(path.clone());
+                    self.last_autosave = Some(std::time::Instant::now());
                     // wyczyść stan z poprzedniego projektu, żeby pliki nowego
                     // zawsze się przeładowały (nawet gdy ścieżki są inne)
                     self.mask = None;
@@ -1302,6 +1344,17 @@ impl eframe::App for ForestApp {
         self.poll_generation(ctx);
         self.poll_histogram(ctx);
 
+        // autosave co 60s jeśli projekt ma ścieżkę (cichy, bez spamowania info)
+        if let Some(path) = self.project_path.clone() {
+            if self
+                .last_autosave
+                .map_or(true, |t| t.elapsed().as_secs() >= 60)
+            {
+                let _ = self.project.save(&path);
+                self.last_autosave = Some(std::time::Instant::now());
+            }
+        }
+
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if self.busy {
@@ -1776,75 +1829,6 @@ impl ForestApp {
                     1.0,
                     0.0..=1000.0,
                 );
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let m = p.exclusion_colors != d.exclusion_colors;
-                    lbl_mod(ui, tr(lang, "Kolory wykluczone (np. drogi/woda):"), m);
-                    if reset_btn(ui, m) {
-                        p.exclusion_colors = d.exclusion_colors.clone();
-                    }
-                });
-                let mut remove: Option<usize> = None;
-                for (i, c) in p.exclusion_colors.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let [r, g, b] = c.0;
-                        let (_rect, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                        ui.painter_at(resp.rect).rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
-                        ui.label(format!("#{:02X}{:02X}{:02X}", r, g, b));
-                        if ui.button("✖").clicked() {
-                            remove = Some(i);
-                        }
-                    });
-                }
-                if let Some(i) = remove {
-                    p.exclusion_colors.remove(i);
-                }
-                if self.mask.is_some() {
-                    match &self.histogram {
-                        None => {
-                            ui.small(tr(lang, "Analizuję kolory maski..."));
-                        }
-                        Some(hist) => {
-                            let cands: Vec<(Rgb8, usize)> = hist
-                                .iter()
-                                .filter(|(c, _)| {
-                                    !p.exclusion_colors.contains(c)
-                                        && !p.zones.iter().any(|z| z.color == *c)
-                                })
-                                .take(24)
-                                .cloned()
-                                .collect();
-                            if cands.is_empty() {
-                                ui.small("Brak nowych kolorów do wykluczenia.");
-                            } else {
-                                ScrollArea::vertical()
-                                    .max_height(140.0)
-                                    .id_source("excl_colors")
-                                    .show(ui, |ui| {
-                                        for (c, n) in cands {
-                                            let [r, g, b] = c.0;
-                                            ui.horizontal(|ui| {
-                                                let (_rect, resp) = ui.allocate_exact_size(
-                                                    Vec2::splat(16.0),
-                                                    Sense::click(),
-                                                );
-                                                ui.painter_at(resp.rect).rect_filled(
-                                                    resp.rect,
-                                                    2.0,
-                                                    Color32::from_rgb(r, g, b),
-                                                );
-                                                ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
-                                                ui.weak(format!("{n} px"));
-                                                if ui.button(tr(lang, "+ Wyklucz")).clicked() {
-                                                    p.exclusion_colors.push(c);
-                                                }
-                                            });
-                                        }
-                                    });
-                            }
-                        }
-                    }
-                }
             });
 
         // Rozrzut
@@ -1923,8 +1907,29 @@ impl ForestApp {
                 });
                 ui.separator();
                 let mut remove: Option<usize> = None;
+                // posortowane indeksy dla poprawnego grupowania (Iglaste/Liściaste/Krzewy + DLC)
+                let mut indices: Vec<usize> = (0..self.project.species.len()).collect();
+                indices.sort_by(|&a, &b| {
+                    let ga = &self.project.species[a].group;
+                    let gb = &self.project.species[b].group;
+                    let order = |g: &str| match g {
+                        "Iglaste" => 0,
+                        "Liściaste" => 1,
+                        "Krzewy" => 2,
+                        "Bliss (lato)" => 3,
+                        "Sakhal (zima/mrok)" => 4,
+                        _ if g.is_empty() => 99,
+                        _ => 50,
+                    };
+                    order(ga)
+                        .cmp(&order(gb))
+                        .then_with(|| ga.cmp(gb))
+                        .then_with(|| self.project.species[a].label.cmp(&self.project.species[b].label))
+                });
                 let mut last_group = String::new();
-                for (i, sp) in self.project.species.iter_mut().enumerate() {
+                for idx in indices {
+                    let i = idx;
+                    let sp = &mut self.project.species[idx];
                     // nagłówek grupy (puste pole grupy -> "Inne")
                     let group_label = if sp.group.is_empty() {
                         tr(lang, "Inne")
