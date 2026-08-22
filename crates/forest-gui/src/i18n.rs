@@ -736,6 +736,16 @@ const DICT: &[Entry] = &[
     ("Wyeksportowano {0} presetów do {1}.", "Exported {0} presets to {1}.", "{0} Presets nach {1} exportiert."),
     ("Zaimportowano {0} presetów (pominięto {1} duplikatów) z {2}.", "Imported {0} presets (skipped {1} duplicates) from {2}.", "{0} Presets importiert ({1} Duplikate übersprungen) aus {2}."),
 
+    ("Bór mroczny", "Dark forest", "Dunkler Wald"),
+    ("Buczyna karpacka", "Carpathian beech forest", "Karpaten-Buchenwald"),
+    ("Zimowa brzezina", "Winter birch grove", "Winter-Birkenhain"),
+    ("Mieszany las zimowy", "Mixed winter forest", "Mischwald Winter"),
+    ("Zarośla letnie", "Summer thickets", "Sommergebüsch"),
+    ("Letni bór sosnowy", "Summer pine forest", "Sommer-Kiefernwald"),
+    ("Zimowy las mieszany", "Winter mixed forest", "Winter-Mischwald"),
+    ("Modrzewina", "Larch grove", "Lärchenhain"),
+    ("Zarośla krzewiaste letnie", "Summer shrub thickets", "Sommer-Gebüsch"),
+    ("Mroczna brzezina", "Dark birch grove", "Dunkler Birkenhain"),
 ];
 
 /// Tłumaczy tekst źródłowy (PL). Brak wpisu -> zwraca oryginał.

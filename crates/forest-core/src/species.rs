@@ -510,39 +510,24 @@ impl ZonePreset {
 pub fn zone_presets() -> Vec<ZonePreset> {
     use ZonePreset as P;
     let mut v = vec![
-        // --- Iglaste -----------------------------------------------------
-        P { group: "Iglaste", name: "Bór świerkowy (góry)", density_per_ha: 260.0,
-            weights: &[(13, 5.0), (12, 3.0), (16, 1.0), (11, 1.0)] },
-        P { group: "Iglaste", name: "Bór sosnowy (niziny)", density_per_ha: 230.0,
-            weights: &[(16, 4.0), (15, 4.0), (11, 1.0), (19, 1.0)] },
-        P { group: "Iglaste", name: "Młodnik iglasty", density_per_ha: 340.0,
-            weights: &[(11, 5.0), (15, 2.0)] },
-        // --- Liściaste ---------------------------------------------------
-        P { group: "Liściaste", name: "Dębowa puszcza", density_per_ha: 180.0,
-            weights: &[(5, 3.0), (4, 3.0), (3, 1.0), (17, 1.0)] },
-        P { group: "Liściaste", name: "Grąd (dąb-buk)", density_per_ha: 200.0,
-            weights: &[(6, 3.0), (5, 2.0), (4, 2.0), (8, 1.0)] },
-        P { group: "Liściaste", name: "Brzozowy zagajnik", density_per_ha: 190.0,
-            weights: &[(2, 3.0), (1, 3.0), (0, 1.0), (17, 1.0)] },
-        P { group: "Liściaste", name: "Łęg nadrzeczny", density_per_ha: 170.0,
-            weights: &[(1, 3.0), (8, 3.0), (9, 2.0), (18, 1.0)] },
-        // --- Mieszane ------------------------------------------------------
-        P { group: "Mieszane", name: "Las mieszany nizinny", density_per_ha: 200.0,
-            weights: &[(1, 3.0), (12, 2.0), (4, 2.0), (15, 1.0), (17, 1.0)] },
-        P { group: "Mieszane", name: "Las mieszany wyżynny", density_per_ha: 210.0,
-            weights: &[(12, 3.0), (6, 2.0), (1, 2.0), (13, 1.0), (18, 1.0)] },
-        // --- Krzewy i zarośla -----------------------------------------------
-        P { group: "Krzewy i zarośla", name: "Zarośla krzewiaste", density_per_ha: 420.0,
-            weights: &[(19, 3.0), (17, 3.0), (18, 2.0), (20, 2.0)] },
-        P { group: "Krzewy i zarośla", name: "Samosiewy (młodnik)", density_per_ha: 360.0,
-            weights: &[(0, 3.0), (3, 2.0), (11, 2.0), (21, 1.0)] },
-        // --- AUTO: nowe strefy z P:\DZ\plants* ---
-        P { group: "Iglaste", name: "Bór zimowy", density_per_ha: 240.0, weights: &[(191, 5.0), (61, 3.0), (68, 1.0)] },
-        P { group: "Liściaste", name: "Jesienny las brzozowy", density_per_ha: 190.0, weights: &[(92, 3.0), (67, 1.0)] },
-        P { group: "Bliss (lato)", name: "Letni gaj liściasty", density_per_ha: 200.0, weights: &[(138, 3.0), (59, 2.0), (86, 2.0)] },
-        P { group: "Sakhal (zima/mrok)", name: "Mroczny bór świerkowy", density_per_ha: 260.0, weights: &[(63, 4.0), (64, 3.0), (61, 1.0)] },
-        P { group: "Krzewy i zarośla", name: "Zarośla zimowe", density_per_ha: 350.0, weights: &[(68, 3.0), (68, 2.0), (61, 1.0)] },
-        P { group: "Mieszane", name: "Mieszany las letni", density_per_ha: 210.0, weights: &[(86, 3.0), (121, 2.0), (59, 1.0)] },
+        P { group: "Iglaste", name: "Bór świerkowy (góry)", density_per_ha: 260.0, weights: &[(21, 4.0), (34, 3.0), (35, 2.0), (0, 1.0)] },
+        P { group: "Iglaste", name: "Bór sosnowy (niziny)", density_per_ha: 230.0, weights: &[(7, 4.0), (16, 3.0), (17, 2.0), (21, 1.0)] },
+        P { group: "Iglaste", name: "Młodnik iglasty", density_per_ha: 340.0, weights: &[(34, 5.0), (16, 3.0), (2, 2.0)] },
+        P { group: "Iglaste", name: "Modrzewina", density_per_ha: 220.0, weights: &[(0, 4.0), (2, 3.0), (5, 2.0)] },
+        P { group: "Liściaste", name: "Dębowa puszcza", density_per_ha: 180.0, weights: &[(71, 4.0), (86, 3.0), (87, 2.0), (48, 1.0)] },
+        P { group: "Liściaste", name: "Grąd (dąb-buk)", density_per_ha: 200.0, weights: &[(48, 3.0), (71, 3.0), (86, 2.0), (70, 1.0)] },
+        P { group: "Liściaste", name: "Buczyna karpacka", density_per_ha: 210.0, weights: &[(48, 4.0), (70, 3.0), (54, 2.0), (21, 1.0)] },
+        P { group: "Liściaste", name: "Brzozowy zagajnik", density_per_ha: 190.0, weights: &[(36, 4.0), (46, 3.0), (47, 2.0), (71, 1.0)] },
+        P { group: "Liściaste", name: "Łęg nadrzeczny", density_per_ha: 170.0, weights: &[(95, 3.0), (111, 3.0), (110, 2.0), (36, 1.0)] },
+        P { group: "Mieszane", name: "Las mieszany nizinny", density_per_ha: 200.0, weights: &[(36, 3.0), (71, 2.0), (7, 2.0), (21, 1.0)] },
+        P { group: "Mieszane", name: "Las mieszany wyżynny", density_per_ha: 210.0, weights: &[(21, 3.0), (48, 2.0), (36, 2.0), (87, 1.0)] },
+        P { group: "Krzewy i zarośla", name: "Zarośla krzewiaste", density_per_ha: 420.0, weights: &[(126, 3.0), (128, 3.0), (130, 2.0), (117, 2.0)] },
+        P { group: "Krzewy i zarośla", name: "Samosiewy (młodnik)", density_per_ha: 360.0, weights: &[(46, 3.0), (120, 2.0), (123, 2.0), (126, 1.0)] },
+        P { group: "Bliss (lato)", name: "Letni gaj liściasty", density_per_ha: 200.0, weights: &[(172, 3.0), (136, 3.0), (150, 2.0), (170, 1.0)] },
+        P { group: "Bliss (lato)", name: "Letni bór sosnowy", density_per_ha: 220.0, weights: &[(188, 4.0), (193, 3.0), (176, 2.0), (206, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Mroczny bór świerkowy", density_per_ha: 260.0, weights: &[(282, 4.0), (283, 3.0), (280, 2.0), (271, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Zimowy las mieszany", density_per_ha: 210.0, weights: &[(247, 3.0), (248, 3.0), (270, 2.0), (284, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Mroczna brzezina", density_per_ha: 190.0, weights: &[(247, 4.0), (248, 3.0), (245, 2.0), (282, 1.0)] },
     ];
     v.sort_by(|a, b| {
         let order = |g: &str| match g {
