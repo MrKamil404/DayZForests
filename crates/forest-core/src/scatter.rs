@@ -615,6 +615,7 @@ fn plan_min_dist(spacing: f64, area_m2: f64, target: usize) -> f64 {
 pub fn generate(
     project: &ForestProject,
     mask: Option<&MaskImage>,
+    satellite: Option<&MaskImage>,
     heightmap: Option<&AscHeightmap>,
     exclusions: Option<&GeoJsonData>,
     progress: Progress,
@@ -782,6 +783,20 @@ pub fn generate(
                 0.0
             };
 
+            // inteligentne generowanie: filtr kolorów podkładu
+            let cf_samples: Vec<Rgb8> = area
+                .color_filter
+                .as_ref()
+                .map(|f| f.samples.clone())
+                .unwrap_or_default();
+            let cf_tol = area
+                .color_filter
+                .as_ref()
+                .map(|f| f.tolerance)
+                .unwrap_or(0);
+            let use_cf = !cf_samples.is_empty() && satellite.is_some();
+            let sat_ref = satellite;
+
             // poszarpany brzeg: podpisana odległość od granicy + szum
             let (bmin_x, bmin_y, bmax_x, bmax_y) = bbox_of(ring);
             let margin_jag = jag_a;
@@ -811,6 +826,30 @@ pub fn generate(
                                 if blend_in_a > 0.0 && signed >= 0.0 && signed < blend_in_a {
                                     let t = (signed / blend_in_a).clamp(0.0, 1.0);
                                     if rng.gen::<f64>() > smoothstep(t) {
+                                        continue;
+                                    }
+                                }
+                                // inteligentne generowanie: piksel podkładu musi
+                                // pasować do jednej z próbek
+                                if use_cf {
+                                    let s = sat_ref.unwrap();
+                                    let fx = (x / size) * f64::from(s.width);
+                                    let fy = ((size - y) / size) * f64::from(s.height);
+                                    let px_i = (fx.floor().max(0.0) as u32).min(s.width - 1);
+                                    let py_i = (fy.floor().max(0.0) as u32).min(s.height - 1);
+                                    let pc = s.pixel(px_i, py_i);
+                                    let ok = cf_samples.iter().any(|sm| {
+                                        (i32::from(pc.0[0]) - i32::from(sm.0[0])).unsigned_abs()
+                                            as u32
+                                            + (i32::from(pc.0[1]) - i32::from(sm.0[1]))
+                                                .unsigned_abs()
+                                                as u32
+                                            + (i32::from(pc.0[2]) - i32::from(sm.0[2]))
+                                                .unsigned_abs()
+                                                as u32
+                                            <= cf_tol
+                                    });
+                                    if !ok {
                                         continue;
                                     }
                                 }
@@ -1394,7 +1433,7 @@ mod tests {
         let proj = zone_project(&[green]);
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         // mapa 1000m, prostokat 800x800m = 64 ha * 300/ha = 19200 celów
-        let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert!(stats.total >= 18_000, "total={}", stats.total);
         assert_eq!(objs.len(), stats.total);
 
@@ -1422,8 +1461,8 @@ mod tests {
         let red = Rgb8([255, 0, 0]);
         let proj = zone_project(&[red]);
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), red);
-        let (o1, _) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
-        let (o2, _) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (o1, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
+        let (o2, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert_eq!(o1.len(), o2.len());
         for (a, b) in o1.iter().zip(&o2) {
             assert_eq!(a.model, b.model);
@@ -1451,9 +1490,9 @@ mod tests {
             }
         }
         let mask = MaskImage::from_dynamic(image::DynamicImage::ImageRgba8(img));
-        let (_, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (_, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
 
-        let (objs, _) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         for o in &objs {
             assert!(o.x < 400.0 || o.x >= 600.0, "obiekt w wykluczeniu x={}", o.x);
         }
@@ -1469,7 +1508,7 @@ mod tests {
             r#"{"type":"Polygon","coordinates":[[[400,400],[600,400],[600,600],[400,600],[400,400]]]}"#,
         )
         .unwrap();
-        let (objs, _) = generate(&proj, Some(&mask), None, Some(&gj), &|_| {}).unwrap();
+        let (objs, _) = generate(&proj, Some(&mask), None, None, Some(&gj), &|_| {}).unwrap();
         for o in &objs {
             assert!(o.x < 400.0 || o.x > 600.0 || o.y < 400.0 || o.y > 600.0);
         }
@@ -1487,7 +1526,7 @@ mod tests {
              100 110 120\n50 60 70\n0 10 20\n";
         let hm = AscHeightmap::parse(asc_text).unwrap();
         let (objs, stats) =
-            generate(&proj, Some(&mask), Some(&hm), None, &|_| {}).unwrap();
+            generate(&proj, Some(&mask), None, Some(&hm), None, &|_| {}).unwrap();
         assert!(stats.rejected_filters > 0);
         for o in &objs {
             let h = hm.sample(o.x, o.y).unwrap();
@@ -1505,7 +1544,7 @@ mod tests {
         let asc_text = "ncols 3\nnrows 3\nxllcorner 0\nyllcorner 0\ncellsize 333.34\nNODATA_value -9999\n\
              100 110 120\n50 60 70\n0 10 20\n";
         let hm = AscHeightmap::parse(asc_text).unwrap();
-        let (objs, _) = generate(&proj, Some(&mask), Some(&hm), None, &|_| {}).unwrap();
+        let (objs, _) = generate(&proj, Some(&mask), None, Some(&hm), None, &|_| {}).unwrap();
         assert!(objs.iter().any(|o| o.elevation > 0.0));
     }
 
@@ -1517,7 +1556,7 @@ mod tests {
         p.clearing_strength = 0.5;
 
         let mask = mask_with_rect(120, 120, (0, 0, 120, 120), green);
-        let (objs, stats) = generate(&p, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&p, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert!(stats.rejected_clearing > 0);
         assert!(stats.total >= 29_000, "total={}", stats.total);
 
@@ -1547,14 +1586,14 @@ mod tests {
         let green = Rgb8([0, 200, 0]);
         let proj = zone_project(&[green]);
         let mask = mask_with_rect(20, 20, (0, 0, 0, 0), green);
-        assert!(generate(&proj, Some(&mask), None, None, &|_| {}).is_err());
+        assert!(generate(&proj, Some(&mask), None, None, None, &|_| {}).is_err());
     }
 
     #[test]
     fn zones_require_mask_when_present_in_project() {
         let green = Rgb8([0, 200, 0]);
         let proj = zone_project(&[green]);
-        assert!(generate(&proj, None, None, None, &|_| {}).is_err());
+        assert!(generate(&proj, None, None, None, None, &|_| {}).is_err());
     }
 
     // --- obszary (poligony) ------------------------------------------------
@@ -1575,9 +1614,10 @@ mod tests {
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
         });
         // 16 ha * 200/ha = 3200 celów
-        let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.total >= 2_000, "total={}", stats.total);
         let poly = Polygon {
             rings: vec![square_ring(300.0, 300.0, 700.0, 700.0)],
@@ -1600,9 +1640,10 @@ mod tests {
             polygon: square_ring(350.0, 350.0, 650.0, 650.0),
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
         });
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
-        let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
 
         let in_area_b = objs
             .iter()
@@ -1638,7 +1679,7 @@ mod tests {
         };
 
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
-        let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert!(stats.edge_count > 0, "edge_count={}", stats.edge_count);
 
         let edge_objs: Vec<&PlacedObject> =
@@ -1689,6 +1730,7 @@ mod tests {
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
         });
         proj.edges = EdgeSettings {
             enabled: true,
@@ -1699,7 +1741,7 @@ mod tests {
             jagged_m: 0.0,
             blend_inside_m: 0.0,
         };
-        let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.edge_count > 0);
 
         for o in objs.iter().filter(|o| o.model == "b_1f") {
@@ -1737,6 +1779,7 @@ mod tests {
             polygon: vec![[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [0.0, 100.0]],
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
         });
         let err = proj.validate().unwrap_err();
         assert!(err.contains("przecina sam siebie"), "{err}");
@@ -1755,9 +1798,10 @@ mod tests {
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
         });
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
-        let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         // wyłącznie gatunek z obszaru (b_1f); nic z maski (a_1f)
         assert!(!objs.iter().any(|o| o.model == "a_1f"));
         for o in &objs {
@@ -1774,7 +1818,7 @@ mod tests {
         proj.use_areas = false;
         assert!(proj.validate().is_err());
         let mask = mask_with_rect(30, 30, (5, 5, 20, 20), green);
-        assert!(generate(&proj, Some(&mask), None, None, &|_| {}).is_err());
+        assert!(generate(&proj, Some(&mask), None, None, None, &|_| {}).is_err());
     }
 
     #[test]
@@ -1790,8 +1834,9 @@ mod tests {
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
         });
-        let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 1_000);
 
         let outside = objs
@@ -1835,7 +1880,7 @@ mod tests {
             blend_inside_m: 0.0,
         };
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
-        let (objs, _) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
 
         // pas [100..900]^2; podział na 3 pierścienie głębokości
         let count_at = |lo: f64, hi: f64| -> usize {
@@ -1862,7 +1907,7 @@ mod tests {
         let proj = zone_project(&[green]);
         assert!(!proj.edges.enabled);
         let mask = mask_with_rect(60, 60, (10, 10, 40, 40), green);
-        let (_, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (_, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert_eq!(stats.edge_count, 0);
     }
 
@@ -1891,11 +1936,12 @@ mod tests {
             } else {
                 None
             },
+            color_filter: None,
         };
         proj.areas.push(mk_area("Z granicą", 50.0, true));
         proj.areas.push(mk_area("Bez granicy", 620.0, false));
 
-        let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.edge_count > 0);
 
         // krzaki (b_1f) tylko przy obszarze "Z granicą"
@@ -1941,12 +1987,13 @@ mod tests {
                 polygon: square_ring(300.0, 300.0, 700.0, 700.0),
                 preset_mix: Vec::new(),
                 edges: None,
+                color_filter: None,
             });
             proj
         };
 
         let proj = mk_proj(true);
-        let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 500, "total={}", stats.total);
         assert!(stats.removed_cut > 0, "removed={}", stats.removed_cut);
         assert_eq!(stats.total, objs.len());
@@ -1958,7 +2005,66 @@ mod tests {
 
         // kontrola: bez wycinania pas miał drzewa
         let proj2 = mk_proj(false);
-        let (objs2, _) = generate(&proj2, Some(&mask), None, None, &|_| {}).unwrap();
+        let (objs2, _) = generate(&proj2, Some(&mask), None, None, None, &|_| {}).unwrap();
         assert!(objs2.iter().any(|o| o.x >= 400.0 && o.x <= 600.0));
+    }
+
+    #[test]
+    fn sat_color_filter_gates_generation() {
+        // poligon na całej mapie; podkład: lewa połowa zielona (las), prawa szara (pole)
+        let green = Rgb8([60, 140, 60]);
+        let gray = Rgb8([180, 180, 180]);
+        let mut img = image::RgbaImage::new(100, 100);
+        for y in 0..100u32 {
+            for x in 0..100u32 {
+                let c = if x < 50 { green } else { gray };
+                img.put_pixel(x, y, image::Rgba([c.r(), c.g(), c.b(), 255]));
+            }
+        }
+        let sat = MaskImage::from_dynamic(image::DynamicImage::ImageRgba8(img));
+
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.use_mask_zones = false;
+        proj.use_areas = true;
+        proj.edges.jagged_m = 0.0;
+        proj.areas.push(AreaDef {
+            label: "Inteligentny".into(),
+            density_per_ha: 200.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: square_ring(50.0, 50.0, 950.0, 950.0),
+            preset_mix: Vec::new(),
+            edges: None,
+            color_filter: Some(crate::preset::ColorFilter {
+                samples: vec![green],
+                tolerance: 40,
+            }),
+        });
+
+        // mapa 1000 m, podkład 100 px => 10 m/px; lewa połowa to [0,500)
+        let (objs, stats) =
+            generate(&proj, None, Some(&sat), None, None, &|_| {}).unwrap();
+        assert!(stats.total > 300, "total={}", stats.total);
+        for o in &objs {
+            assert!(o.x < 510.0, "obiekt na polu x={}", o.x);
+        }
+
+        // kontrola bez filtra: drzewa też po prawej
+        let mut proj2 = zone_project(&[]);
+        proj2.zones.clear();
+        proj2.use_mask_zones = false;
+        proj2.use_areas = true;
+        proj2.edges.jagged_m = 0.0;
+        proj2.areas.push(AreaDef {
+            label: "Bez filtra".into(),
+            density_per_ha: 200.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: square_ring(50.0, 50.0, 950.0, 950.0),
+            preset_mix: Vec::new(),
+            edges: None,
+            color_filter: None,
+        });
+        let (objs2, _) = generate(&proj2, None, Some(&sat), None, None, &|_| {}).unwrap();
+        assert!(objs2.iter().any(|o| o.x > 600.0));
     }
 }

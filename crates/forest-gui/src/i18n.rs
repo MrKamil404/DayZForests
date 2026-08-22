@@ -224,6 +224,8 @@ const DICT: &[Entry] = &[
     // --- strefy ---
     ("+ Dodaj strefę", "+ Add zone", "+ Zone hinzufügen"),
     ("Analizuję kolory maski...", "Analyzing mask colors...", "Analysiere Maskenfarben..."),
+    ("+ Wyklucz", "+ Exclude", "+ Ausschließen"),
+    ("+ Użyj", "+ Use", "+ Verwenden"),
     ("Usuń strefę", "Delete zone", "Zone löschen"),
     ("RGB ręcznie:", "Manual RGB:", "Manuell RGB:"),
     ("Wagi gatunków:", "Species weights:", "Arten-Gewichte:"),
@@ -243,6 +245,7 @@ const DICT: &[Entry] = &[
     ("Edytuj preset", "Edit preset", "Preset bearbeiten"),
     // --- obszary ---
     ("Usuń obszar", "Delete area", "Bereich löschen"),
+    ("Edytuj obszar (wierzchołki)", "Edit area (vertices)", "Bereich bearbeiten (Eckpunkte)"),
     ("Własna granica", "Own edge", "Eigener Waldrand"),
     (
         "Wyczyść wszystkie obszary",

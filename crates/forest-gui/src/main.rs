@@ -50,6 +50,7 @@ struct ForestApp {
     exclusions: Option<Arc<GeoJsonData>>,
     mask_tex: Option<TextureHandle>,
     sat_tex: Option<TextureHandle>,
+    sat_image: Option<Arc<MaskImage>>,
     sat_alpha: f32,
     overlay_tex: Option<TextureHandle>,
     show_mask: bool,
@@ -73,10 +74,17 @@ struct ForestApp {
     draw_mode: bool,
     draw_points: Vec<[f64; 2]>,
 
+    /// Indeks obszaru w trakcie edycji (przesuwanie/dodawanie wierzchołków).
+    editing_area: Option<usize>,
+    /// Indeks wybranego/przesuwanego wierzchołka w edytowanym obszarze.
+    editing_vertex: Option<usize>,
+
     /// Indeks strefy, której kolor jest właśnie edytowany.
     zone_color_edit: Option<usize>,
     /// Indeks gatunku, którego kolor jest edytowany.
     species_color_edit: Option<usize>,
+    /// Obszar, dla którego pobierane są próbki kolorów z podkładu.
+    sampling_area: Option<usize>,
 
     // presety użytkownika (edytowalne kopie + własne)
     user_presets: Vec<UserPreset>,
@@ -111,6 +119,7 @@ impl ForestApp {
             exclusions: None,
             mask_tex: None,
             sat_tex: None,
+            sat_image: None,
             sat_alpha: 1.0,
             overlay_tex: None,
             show_mask: true,
@@ -129,7 +138,10 @@ impl ForestApp {
             info: None,
             draw_mode: false,
             draw_points: Vec::new(),
+            editing_area: None,
+            editing_vertex: None,
             zone_color_edit: None,
+            sampling_area: None,
             species_color_edit: None,
             user_presets: Vec::new(),
             preset_edit_open: None,
@@ -171,13 +183,14 @@ impl ForestApp {
     fn load_satellite(&mut self, ctx: &egui::Context, path: &str) {
         match MaskImage::load(path) {
             Ok(m) => {
+                let (sw, sh) = (m.width, m.height);
                 let tex = preview_texture(ctx, "satellite", &m, TextureOptions::LINEAR);
+                self.sat_image = Some(Arc::new(m));
                 self.sat_tex = Some(tex);
                 self.show_sat = true;
                 self.project.paths.satellite = Some(path.to_string());
                 self.info = Some(format!(
-                    "Wczytano podkład satelitarny: {path} ({}x{} px)",
-                    m.width, m.height
+                    "Wczytano podkład satelitarny: {path} ({sw}x{sh} px)"
                 ));
                 self.error = None;
             }
@@ -232,6 +245,7 @@ impl ForestApp {
         // anuluj niedokończony szkic przy starcie generowania
         self.draw_mode = false;
         self.draw_points.clear();
+        self.sampling_area = None;
         self.project.sanitize();
         if let Err(e) = self.project.validate() {
             self.error = Some(e);
@@ -239,6 +253,7 @@ impl ForestApp {
         }
         let proj = self.project.clone();
         let mask = self.mask.clone();
+        let sat_img = self.sat_image.clone();
         let hm = self.heightmap.clone();
         let ex = self.exclusions.clone();
         let prog = self.progress.clone();
@@ -251,7 +266,7 @@ impl ForestApp {
         self.info = Some(tr(lang, "Generowanie w toku...").into());
 
         std::thread::spawn(move || {
-            let res = generate(&proj, mask.as_deref(), hm.as_deref(), ex.as_deref(), &|f| {
+            let res = generate(&proj, mask.as_deref(), sat_img.as_deref(), hm.as_deref(), ex.as_deref(), &|f| {
                 *prog.lock().unwrap() = f;
             });
             tx.send(res).ok();
@@ -387,6 +402,7 @@ impl ForestApp {
                     self.mask = None;
                     self.mask_tex = None;
                     self.sat_tex = None;
+                    self.sat_image = None;
                     self.heightmap = None;
                     self.exclusions = None;
                     self.histogram = None;
@@ -395,6 +411,7 @@ impl ForestApp {
                     self.objects.clear();
                     self.stats = None;
                     self.zone_color_edit = None;
+                    self.sampling_area = None;
                     self.info = Some(tf(lang, "Wczytano projekt: {0}", &[path.display().to_string().as_str()]));
                     self.reload_project_files(ctx);
                     self.error = None;
@@ -523,6 +540,7 @@ impl ForestApp {
             species_weights: Vec::new(),
             preset_mix: Vec::new(),
             edges: None,
+            color_filter: None,
             polygon: std::mem::take(&mut self.draw_points),
         });
         let area_label = self.project.areas.last().unwrap().label.clone();
@@ -611,6 +629,22 @@ fn build_overlay(
     ColorImage::from_rgba_unmultiplied([disp_w as usize, disp_h as usize], &rgba)
 }
 
+/// Odległość punktu od odcinka (ekran), do chwytania krawędzi poligonu.
+fn seg_dist_screen(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let abx = b.x - a.x;
+    let aby = b.y - a.y;
+    let apx = p.x - a.x;
+    let apy = p.y - a.y;
+    let denom = abx * abx + aby * aby;
+    let t = if denom <= f32::EPSILON {
+        0.0
+    } else {
+        ((apx * abx + apy * aby) / denom).clamp(0.0, 1.0)
+    };
+    let dx = apx - t * abx;
+    let dy = apy - t * aby;
+    dx.hypot(dy)
+}
 /// Wzorzec dysku (koła) do rysowania obiektów na nakładce podglądu.
 fn dot_stencil(radius: f32) -> Vec<(i64, i64)> {
     let ri = radius.ceil() as i64;
@@ -1560,7 +1594,7 @@ impl ForestApp {
                                                 );
                                                 ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
                                                 ui.weak(format!("{n} px"));
-                                                if ui.button("+ Wyklucz").clicked() {
+                                                if ui.button(tr(lang, "+ Wyklucz")).clicked() {
                                                     p.exclusion_colors.push(c);
                                                 }
                                             });
@@ -1693,25 +1727,40 @@ ui.text_edit_singleline(&mut sp.label);
                                         );
                                     }
                                     Some(hist) => {
-                                        egui::Grid::new(format!("spcol_grid{i}"))
-                                            .num_columns(8)
+                                        ScrollArea::vertical()
+                                            .max_height(150.0)
+                                            .id_source(format!("spcol_list{i}"))
                                             .show(ui, |ui| {
                                                 for (c, n) in hist.iter().take(24) {
                                                     let cc = c.0;
-                                                    let (_rect, resp) = ui
-                                                        .allocate_exact_size(
-                                                            Vec2::splat(18.0),
-                                                            Sense::click(),
+                                                    ui.horizontal(|ui| {
+                                                        let (_rect, resp) = ui
+                                                            .allocate_exact_size(
+                                                                Vec2::splat(18.0),
+                                                                Sense::click(),
+                                                            );
+                                                        ui.painter_at(resp.rect).rect_filled(
+                                                            resp.rect,
+                                                            2.0,
+                                                            Color32::from_rgb(
+                                                                cc[0], cc[1], cc[2],
+                                                            ),
                                                         );
-                                                    ui.painter_at(resp.rect).rect_filled(
-                                                        resp.rect,
-                                                        2.0,
-                                                        Color32::from_rgb(cc[0], cc[1], cc[2]),
-                                                    );
-                                                    if resp.clicked() {
-                                                        sp.color = Some(*c);
-                                                    }
-                                                    ui.weak(format!("{}", n));
+                                                        ui.monospace(format!(
+                                                            "#{:02X}{:02X}{:02X}",
+                                                            cc[0], cc[1], cc[2]
+                                                        ));
+                                                        ui.weak(format!("{n}"));
+                                                        if ui
+                                                            .button(tr(lang, "+ Użyj"))
+                                                            .on_hover_text(
+                                                                "Ustaw kolor gatunku",
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            sp.color = Some(*c);
+                                                        }
+                                                    });
                                                 }
                                             });
                                     }
@@ -2262,6 +2311,21 @@ ui.text_edit_singleline(&mut sp.label);
                             let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                             ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, col);
                             ui.text_edit_singleline(&mut a.label);
+                            if ui
+                                .button(if self.editing_area == Some(ai) { "✏ WŁ" } else { "✏" })
+                                .on_hover_text(tr(lang, "Edytuj obszar (wierzchołki)"))
+                                .clicked()
+                            {
+                                if self.editing_area == Some(ai) {
+                                    self.editing_area = None;
+                                    self.editing_vertex = None;
+                                } else {
+                                    self.editing_area = Some(ai);
+                                    self.editing_vertex = None;
+                                    self.draw_mode = false;
+                                    self.draw_points.clear();
+                                }
+                            }
                             if ui.button("✖").on_hover_text(tr(lang, "Usuń obszar")).clicked() {
                                 to_remove = Some(ai);
                             }
@@ -2322,6 +2386,90 @@ ui.text_edit_singleline(&mut sp.label);
                             }
                         });
 
+                        // 🎯 inteligentne generowanie — kolory z podkładu
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let s_on = self.sampling_area == Some(ai);
+                            if ui
+                                .button(if s_on { "🎯 Pobieranie: WŁ" } else { "🎯" })
+                                .on_hover_text(
+                                    "Inteligentne generowanie: pobierz próbki kolorów \
+                                     lasu z podkładu klikając na mapie (Esc = koniec)",
+                                )
+                                .clicked()
+                            {
+                                if s_on {
+                                    self.sampling_area = None;
+                                } else if self.sat_image.is_some() {
+                                    self.sampling_area = Some(ai);
+                                    self.draw_mode = false;
+                                    self.draw_points.clear();
+                                    self.editing_area = None;
+                                    self.editing_vertex = None;
+                                    self.info =
+                                        Some("Klikaj na podkładzie w miejsca z lasem...".into());
+                                } else {
+                                    self.error =
+                                        Some("Najpierw wczytaj podkład satelitarny (📁 Pliki).".into());
+                                }
+                            }
+                            let n_samp = a
+                                .color_filter
+                                .as_ref()
+                                .map(|f| f.samples.len())
+                                .unwrap_or(0);
+                            ui.label(tr(lang, "Próbki kolorów:"));
+                            if n_samp > 0 {
+                                ui.strong(format!("{n_samp}"));
+                            } else {
+                                ui.weak("0");
+                            }
+                        });
+                        if let Some(cf) = a.color_filter.as_mut() {
+                            if !cf.samples.is_empty() && self.sat_image.is_none() {
+                                ui.colored_label(
+                                    ORANGE_MOD,
+                                    "⚠ Brak podkładu — filtr nie zadziała",
+                                );
+                            }
+                            let mut to_remove: Option<usize> = None;
+                            for (si_, sm) in cf.samples.iter().enumerate() {
+                                let [r, g, b] = sm.0;
+                                ui.horizontal(|ui| {
+                                    let (_rect, resp) = ui
+                                        .allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                    ui.painter_at(resp.rect).rect_filled(
+                                        resp.rect,
+                                        2.0,
+                                        Color32::from_rgb(r, g, b),
+                                    );
+                                    ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.button("✖").clicked() {
+                                                to_remove = Some(si_);
+                                            }
+                                        },
+                                    );
+                                });
+                            }
+                            if let Some(i) = to_remove {
+                                cf.samples.remove(i);
+                            }
+                            ui.horizontal(|ui| {
+                                ui.label(tr(lang, "Tolerancja koloru:"));
+                                ui.add(
+                                    egui::DragValue::new(&mut cf.tolerance)
+                                        .speed(1.0)
+                                        .clamp_range(0..=255),
+                                );
+                                if ui.button(tr(lang, "Wyczyść")).clicked() {
+                                    cf.samples.clear();
+                                }
+                            });
+                        }
+
                         // granica tego obszaru (nadpisuje globalną)
                         let mut own = a.edges.is_some();
                         if ui
@@ -2356,6 +2504,10 @@ ui.text_edit_singleline(&mut sp.label);
                 }
                 if let Some(i) = to_remove {
                     self.project.areas.remove(i);
+                    if self.editing_area == Some(i) {
+                        self.editing_area = None;
+                        self.editing_vertex = None;
+                    }
                 }
                 if !self.project.areas.is_empty()
                     && ui.button(tr(lang, "Wyczyść wszystkie obszary")).clicked()
@@ -2391,7 +2543,11 @@ ui.text_edit_singleline(&mut sp.label);
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 
         // interakcja: pan + zoom do kursora
-        if resp.dragged_by(PointerButton::Primary) || resp.dragged_by(PointerButton::Secondary) {
+        // (w edycji wierzchołka drag przesuwa wierzchołek, nie panuje)
+        let editing_vertex_active = self.editing_area.is_some() && self.editing_vertex.is_some();
+        if !editing_vertex_active
+            && (resp.dragged_by(PointerButton::Primary) || resp.dragged_by(PointerButton::Secondary))
+        {
             self.pan += resp.drag_delta();
         }
         let scroll = ui.input(|i| i.raw_scroll_delta.y);
@@ -2418,6 +2574,9 @@ ui.text_edit_singleline(&mut sp.label);
         if resp.double_clicked() {
             if self.draw_mode {
                 self.finish_area();
+            } else if self.editing_area.is_some() {
+                self.editing_area = None;
+                self.editing_vertex = None;
             } else {
                 self.zoom = 1.0;
                 self.pan = Vec2::ZERO;
@@ -2463,6 +2622,160 @@ ui.text_edit_singleline(&mut sp.label);
             }
             if back {
                 self.draw_points.pop();
+            }
+        }
+
+        // edycja istniejącego obszaru: przesuwanie/dodawanie/usuwanie wierzchołków
+        if let Some(ai) = self.editing_area {
+            let n_pts = self.project.areas.get(ai).map(|a| a.polygon.len());
+            if let Some(_n) = n_pts {
+                // start przeciągania na wierzchołku -> wybierz go
+                if resp.drag_started_by(PointerButton::Primary) {
+                    if let Some(hover) = resp.hover_pos() {
+                        let hit_px = 10.0_f32;
+                        let best_v = self.project.areas[ai]
+                            .polygon
+                            .iter()
+                            .enumerate()
+                            .map(|(vi, p)| {
+                                let s = to_screen(p[0], p[1]);
+                                (vi, (s.x - hover.x).hypot(s.y - hover.y))
+                            })
+                            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                            .filter(|(_, d)| *d <= hit_px)
+                            .map(|(vi, _)| vi);
+                        self.editing_vertex = best_v;
+                    }
+                }
+                // przeciąganie wybranego wierzchołka
+                if resp.dragged_by(PointerButton::Primary) && self.editing_vertex.is_some() {
+                    if let Some(hover) = resp.hover_pos() {
+                        let wx = ((hover.x - origin.x) / scale) as f64;
+                        let wy = map - (((hover.y - origin.y) / scale) as f64);
+                        let vi = self.editing_vertex.unwrap();
+                        if let Some(a) = self.project.areas.get_mut(ai) {
+                            if vi < a.polygon.len() {
+                                a.polygon[vi] = [wx.clamp(0.0, map), wy.clamp(0.0, map)];
+                            }
+                        }
+                    }
+                }
+                // klik bez przeciągnięcia: wybierz wierzchołek albo dodaj na odcinku
+                if resp.clicked_by(PointerButton::Primary) {
+                    if let Some(hover) = resp.hover_pos() {
+                        let hit_px = 10.0_f32;
+                        let wx = ((hover.x - origin.x) / scale) as f64;
+                        let wy = map - (((hover.y - origin.y) / scale) as f64);
+                        let best_v = self.project.areas[ai]
+                            .polygon
+                            .iter()
+                            .enumerate()
+                            .map(|(vi, p)| {
+                                let s = to_screen(p[0], p[1]);
+                                (vi, (s.x - hover.x).hypot(s.y - hover.y))
+                            })
+                            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+                            .filter(|(_, d)| *d <= hit_px)
+                            .map(|(vi, _)| vi);
+                        if let Some(vi) = best_v {
+                            self.editing_vertex = Some(vi);
+                        } else {
+                            // dodaj nowy wierzchołek na najbliższym odcinku
+                            let n = self.project.areas[ai].polygon.len();
+                            let mut best: Option<(usize, f32)> = None;
+                            for i in 0..n {
+                                let a_s = to_screen(
+                                    self.project.areas[ai].polygon[i][0],
+                                    self.project.areas[ai].polygon[i][1],
+                                );
+                                let b_s = to_screen(
+                                    self.project.areas[ai].polygon[(i + 1) % n][0],
+                                    self.project.areas[ai].polygon[(i + 1) % n][1],
+                                );
+                                let d = seg_dist_screen(hover, a_s, b_s);
+                                if d <= hit_px && best.map_or(true, |(_, bd)| d < bd) {
+                                    best = Some((i + 1, d));
+                                }
+                            }
+                            if let Some((ins, _)) = best {
+                                if let Some(a) = self.project.areas.get_mut(ai) {
+                                    a.polygon.insert(
+                                        ins,
+                                        [wx.clamp(0.0, map), wy.clamp(0.0, map)],
+                                    );
+                                }
+                                self.editing_vertex = Some(ins);
+                            }
+                        }
+                    }
+                }
+                // klawiatura: Backspace usuwa wybrany, Esc/Enter kończy edycję
+                let (esc, enter, back) = ui.input(|i| {
+                    (
+                        i.key_pressed(egui::Key::Escape),
+                        i.key_pressed(egui::Key::Enter),
+                        i.key_pressed(egui::Key::Backspace),
+                    )
+                });
+                if back {
+                    if let Some(vi) = self.editing_vertex {
+                        if let Some(a) = self.project.areas.get_mut(ai) {
+                            if a.polygon.len() > 3 && vi < a.polygon.len() {
+                                a.polygon.remove(vi);
+                                self.editing_vertex = None;
+                            }
+                        }
+                    }
+                }
+                if esc || enter {
+                    self.editing_area = None;
+                    self.editing_vertex = None;
+                }
+            }
+        }
+
+        // 🎯 pobieranie próbek kolorów z podkładu satelitarnego
+        if let Some(ai) = self.sampling_area {
+            let (esc, clicked) = (
+                ui.input(|i| i.key_pressed(egui::Key::Escape)),
+                resp.clicked_by(PointerButton::Primary),
+            );
+            if esc {
+                self.sampling_area = None;
+            } else if clicked {
+                if let Some(hover) = resp.hover_pos() {
+                    let wx = ((hover.x - origin.x) / scale) as f64;
+                    let wy = map - (((hover.y - origin.y) / scale) as f64);
+                    if wx >= 0.0 && wy >= 0.0 && wx <= map && wy <= map {
+                        if let Some(sat) = &self.sat_image {
+                            let sx = (wx / map * f64::from(sat.width)) as u32;
+                            let sy = ((map - wy) / map * f64::from(sat.height)) as u32;
+                            let sx = sx.min(sat.width - 1);
+                            let sy = sy.min(sat.height - 1);
+                            let color = sat.pixel(sx, sy);
+                            if let Some(a) = self.project.areas.get_mut(ai) {
+                                let cf = a.color_filter.get_or_insert_with(|| {
+                                    forest_core::preset::ColorFilter {
+                                        samples: Vec::new(),
+                                        tolerance: 60,
+                                    }
+                                });
+                                cf.samples.push(color);
+                                self.info = Some(format!(
+                                    "Próbka #{:02X}{:02X}{:02X} dodana (razem: {}). Esc = koniec.",
+                                    color.0[0],
+                                    color.0[1],
+                                    color.0[2],
+                                    cf.samples.len()
+                                ));
+                            }
+                        } else {
+                            self.error =
+                                Some("Brak podkładu satelitarnego — wczytaj go w 📁 Pliki.".into());
+                            self.sampling_area = None;
+                        }
+                    }
+                }
             }
         }
 
@@ -2555,6 +2868,36 @@ ui.text_edit_singleline(&mut sp.label);
                 egui::FontId::proportional(13.0),
                 col,
             );
+
+            // edycja tego obszaru: uchwyty wierzchołków + punkty środków krawędzi
+            if self.editing_area == Some(ai) {
+                for (vi, p) in a.polygon.iter().enumerate() {
+                    let s = to_screen(p[0], p[1]);
+                    let selected = self.editing_vertex == Some(vi);
+                    painter.circle_filled(
+                        s,
+                        if selected { 7.0 } else { 5.0 },
+                        if selected { Color32::YELLOW } else { Color32::WHITE },
+                    );
+                    painter.circle_stroke(
+                        s,
+                        if selected { 7.0 } else { 5.0 },
+                        egui::Stroke::new(1.5_f32, Color32::from_rgb(40, 40, 40)),
+                    );
+                }
+                // punkty do dodawania wierzchołka (środki odcinków)
+                let n = a.polygon.len();
+                for i in 0..n {
+                    let a_s = to_screen(a.polygon[i][0], a.polygon[i][1]);
+                    let b_s = to_screen(a.polygon[(i + 1) % n][0], a.polygon[(i + 1) % n][1]);
+                    let mid = egui::pos2((a_s.x + b_s.x) / 2.0, (a_s.y + b_s.y) / 2.0);
+                    painter.circle_filled(
+                        mid,
+                        3.0,
+                        Color32::from_rgba_premultiplied(120, 220, 120, 180),
+                    );
+                }
+            }
         }
 
         // szkic rysowanego właśnie poligonu

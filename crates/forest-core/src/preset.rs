@@ -51,6 +51,22 @@ pub struct CutZone {
     pub margin_m: f32,
 }
 
+/// Inteligentne generowanie: filtr kolorów z warstwy satelitarnej.
+/// Drzewa powstają tylko tam, gdzie piksel podkładu pasuje do jednej
+/// z próbek (Manhattan <= tolerancja).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ColorFilter {
+    /// Próbki referencyjne (RGB) pobrane z podkładu.
+    pub samples: Vec<Rgb8>,
+    /// Tolerancja dopasowania (suma różnic kanałów).
+    #[serde(default = "default_cf_tol")]
+    pub tolerance: u32,
+}
+
+fn default_cf_tol() -> u32 {
+    60
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AreaDef {
     pub label: String,
@@ -65,6 +81,10 @@ pub struct AreaDef {
     /// Indywidualna granica lasu dla tego obszaru (None = użyj globalnej).
     #[serde(default)]
     pub edges: Option<EdgeSettings>,
+    /// Inteligentne generowanie: tylko na kolorach podkładu z próbek.
+    /// None lub puste próbki = brak filtra (normalne generowanie).
+    #[serde(default)]
+    pub color_filter: Option<ColorFilter>,
 }
 
 /// Pas graniczny lasu — krzewy/podrost sadzone wzdłuż krawędzi stref i obszarów.

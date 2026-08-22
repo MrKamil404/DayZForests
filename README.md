@@ -56,11 +56,13 @@ moje presety, obszary, wynik generowania ze statystyką per źródło).
    **📚 Moje presety** — edytowalne szablony: ⧉ kopiuj wbudowane, twórz własne,
    zmieniaj nazwy/grupy/gęstości/wagi gatunków (po nazwie modelu — przenośne).
    Zapisywane do `presets_user.json` (przycisk 💾; ★ w listach = moje presety).
-3a. **Obszary (poligony)** — alternatywa dla maski: wybierz preset na pasku,
-   kliknij „✏ Rysuj obszar” i klikaj wierzchołki LPM na mapie
-   (Enter/dwuklik = zakończ, Esc = anuluj, Backspace = cofnij punkt).
-   Obrys **nie może przecinać samego siebie** — generator odmówi z opisem.
-   Można generować wyłącznie z poligonów, bez maski.
+3a. **Obszary (poligony)** — alternatywa dla maski: kliknij „✏ Rysuj obszar” i
+   klikaj wierzchołki LPM na mapie (Enter/dwuklik = zakończ, Esc = anuluj,
+   Backspace = cofnij punkt). Obrys **nie może przecinać samego siebie** —
+   generator odmówi z opisem. Można generować wyłącznie z poligonów, bez maski.
+   **Edycja obszaru:** w 📐 Obszary kliknij **✏**, potem na mapie: przeciągnij
+   biały uchwyt = przesuń wierzchołek, kliknij zielony punkt (środek krawędzi)
+   = dodaj wierzchołek, Backspace = usuń wybrany, Esc/Enter/dwuklik = koniec.
 3b. **⚙ Źródła generowania** — przełączniki: strefy z maski / obszary rysowane /
    granica lasu. Wyłączone źródła są pomijane niezależnie od reszty konfiguracji.
 3c. **Granica lasu** — opcjonalny pas krzewów/podrostu wzdłuż krawędzi lasu

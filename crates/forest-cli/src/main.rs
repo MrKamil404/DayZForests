@@ -1,4 +1,4 @@
-//! forest-cli — generowanie lasów z wiersza poleceń.
+﻿//! forest-cli — generowanie lasów z wiersza poleceń.
 //!
 //! Użycie:
 //!   forest-cli init <projekt.json>              — zapisuje przykładowy projekt
@@ -142,6 +142,10 @@ fn cmd_run(project_path: &str, opts: &[String]) -> Result<String, String> {
         None => None,
     };
 
+    let satellite = match &project.paths.satellite {
+        Some(p) => Some(MaskImage::load(p)?),
+        None => None,
+    };
     let heightmap = match &project.paths.heightmap_asc {
         Some(p) => Some(AscHeightmap::load(p)?),
         None => None,
@@ -182,7 +186,7 @@ fn cmd_run(project_path: &str, opts: &[String]) -> Result<String, String> {
 
     let start = std::time::Instant::now();
     let (objects, stats) =
-        generate(&project, mask.as_ref(), heightmap.as_ref(), exclusions.as_ref(), &|f| {
+        generate(&project, mask.as_ref(), satellite.as_ref(), heightmap.as_ref(), exclusions.as_ref(), &|f| {
             if !quiet {
                 print!("\r  postęp: {:>3}%", (f * 100.0) as u32);
                 use std::io::Write;
