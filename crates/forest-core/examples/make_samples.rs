@@ -125,6 +125,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         edge_padding_m: 24.0,
         color_tolerance: 12,
         exclusion_colors: vec![lake, road],
+        cut_zones: vec![
+            // demo: wycina drzewa 8 m od szarej drogi
+            forest_core::preset::CutZone { color: road, margin_m: 8.0 },
+        ],
         elevation_mode: ElevationMode::RelativeZero,
         species: vanilla_library(),
         zones: vec![

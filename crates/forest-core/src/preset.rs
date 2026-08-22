@@ -43,6 +43,14 @@ impl Default for ZoneDef {
 
 /// Obszar rysowany ręcznie (poligon) — alternatywa dla stref z maski.
 /// Współrzędne świata w metrach (origin SW), obrys zamknięty automatycznie.
+/// Strefa wycinania: obiekty w promieniu `margin_m` od pikseli o kolorze
+/// `color` są usuwane PO generowaniu (niezależnie od źródła).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CutZone {
+    pub color: Rgb8,
+    pub margin_m: f32,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AreaDef {
     pub label: String,
@@ -54,6 +62,9 @@ pub struct AreaDef {
     /// Miks presetów jak w ZoneDef.
     #[serde(default)]
     pub preset_mix: Vec<(String, f32)>,
+    /// Indywidualna granica lasu dla tego obszaru (None = użyj globalnej).
+    #[serde(default)]
+    pub edges: Option<EdgeSettings>,
 }
 
 /// Pas graniczny lasu — krzewy/podrost sadzone wzdłuż krawędzi stref i obszarów.
@@ -165,6 +176,11 @@ pub struct ForestProject {
     #[serde(default)]
     pub edges: EdgeSettings,
 
+    /// Strefy wycinania po kolorze maski + bufor [m] — usuwają wygenerowane
+    /// obiekty PO generowaniu (działa też na obszary rysowane).
+    #[serde(default)]
+    pub cut_zones: Vec<CutZone>,
+
     #[serde(default)]
     pub paths: ProjectPaths,
 }
@@ -191,6 +207,7 @@ impl Default for ForestProject {
             zones: Vec::new(),
             use_mask_zones: true,
             use_areas: true,
+            cut_zones: Vec::new(),
             areas: Vec::new(),
             edges: EdgeSettings::default(),
             paths: ProjectPaths::default(),

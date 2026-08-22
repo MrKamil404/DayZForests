@@ -68,6 +68,13 @@ moje presety, obszary, wynik generowania ze statystyką per źródło).
    efektywną linię lasu, dzięki czemu brzeg nie jest równy jak od linijki
    (dotyczy też obrysów rysowanych poligonów). **Wtapianie w las [m]** —
    jak głęboko od krawędzi gęstość drzew narasta 0 → pełna.
+3d. **Własna granica per-obszar** — w panelu 📐 Obszary zaznacz „Własna
+   granica", aby nadpisać globalne parametry dla tego jednego obszaru.
+3e. **✂ Wycinanie (kolor + bufor)** — usuwa WYGENEROWANE obiekty w buforze
+   [m] wokół pikseli wybranego koloru maski (np. szare drogi + 10 m).
+   Działa na wszystkie źródła, także rysowane poligony; nakładane przy każdym
+   generowaniu. Ustawienia z pomarańczową etykietą mają ⟲ do wartości
+   domyślnej obok pola.
 4. **Filtry / Rozrzut** → min./maks. wysokość, maks. spadek, tolerancja koloru,
    mnożnik odstępów, skala i siła polan.
 5. **▶ Generuj** → podgląd punktów na masce (kolor = gatunek), statystyki.

@@ -476,6 +476,7 @@ impl ForestApp {
             density_per_ha: 0.0,
             species_weights: Vec::new(),
             preset_mix: Vec::new(),
+            edges: None,
             polygon: std::mem::take(&mut self.draw_points),
         });
         self.info = Some(format!(
@@ -770,6 +771,131 @@ fn setting_u32(ui: &mut egui::Ui, label: &str, v: &mut u32, d: u32, range: std::
     });
 }
 
+/// Wspólny edytor ustawień granicy (globalnej lub per-obszar).
+/// `d` = wartości odniesienia dla przycisków ⟲.
+fn ui_edge_settings(
+    ui: &mut egui::Ui,
+    e: &mut EdgeSettings,
+    d: &EdgeSettings,
+    species: &[forest_core::species::SpeciesDef],
+) {
+    let n_species = species.len();
+    setting_bool(
+        ui,
+        "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)",
+        "",
+        &mut e.enabled,
+        d.enabled,
+    );
+    ui.add_enabled_ui(e.enabled, |ui| {
+        ui.horizontal(|ui| {
+            let m = (e.band_width_m - d.band_width_m).abs() > 1e-9;
+            lbl_mod(ui, "Szerokość pasa [m]:", m);
+            ui.add(egui::DragValue::new(&mut e.band_width_m).speed(1.0).clamp_range(1.0..=300.0));
+            if reset_btn(ui, m) {
+                e.band_width_m = d.band_width_m;
+            }
+        });
+        ui.horizontal(|ui| {
+            let m = (e.density_per_ha - d.density_per_ha).abs() > 1e-9;
+            lbl_mod(ui, "Gęstość [szt/ha]:", m);
+            ui.add(egui::DragValue::new(&mut e.density_per_ha).speed(1.0).clamp_range(1.0..=5000.0));
+            if reset_btn(ui, m) {
+                e.density_per_ha = d.density_per_ha;
+            }
+        });
+        ui.horizontal(|ui| {
+            let m = e.blend != d.blend;
+            let _ = ui
+                .checkbox(&mut e.blend, "Wtapianie pasa")
+                .on_hover_text(
+                    "Gęstość zanika wraz z odległością od granicy \
+                     (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków",
+                )
+                .changed();
+            if reset_btn(ui, m) {
+                e.blend = d.blend;
+            }
+        });
+        horiz_tip(
+            ui,
+            "Szum przesuwający linię lasu — brzeg nie jest równy jak od linijki. \
+             Dotyczy też obrysów poligonów.",
+            |ui| {
+                let m = (e.jagged_m - d.jagged_m).abs() > 1e-9;
+                lbl_mod(ui, "Poszarpanie granicy [m]:", m);
+                ui.add(egui::DragValue::new(&mut e.jagged_m).speed(1.0).clamp_range(0.0..=200.0));
+                if reset_btn(ui, m) {
+                    e.jagged_m = d.jagged_m;
+                }
+            },
+        );
+        horiz_tip(
+            ui,
+            "Jak głęboko od krawędzi gęstość drzew narasta 0 -> pełna. \
+             Otwarte, naturalne obrzeża lasu.",
+            |ui| {
+                let m = (e.blend_inside_m - d.blend_inside_m).abs() > 1e-9;
+                lbl_mod(ui, "Wtapianie w las [m]:", m);
+                ui.add(
+                    egui::DragValue::new(&mut e.blend_inside_m)
+                        .speed(1.0)
+                        .clamp_range(0.0..=500.0),
+                );
+                if reset_btn(ui, m) {
+                    e.blend_inside_m = d.blend_inside_m;
+                }
+            },
+        );
+        ui.horizontal(|ui| {
+            ui.small("Wagi gatunków granicy:");
+            let m = e.species_weights != d.species_weights;
+            if reset_btn(ui, m) {
+                // przywróć domyślne krzewy, odfiltrowując spoza listy gatunków
+                e.species_weights = d
+                    .species_weights
+                    .iter()
+                    .filter(|(i, _)| (*i as usize) < n_species)
+                    .copied()
+                    .collect();
+            }
+        });
+        for si in 0..n_species {
+            let sp = &species[si];
+            let c = species_preview_color(si);
+            ui.horizontal(|ui| {
+                let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+                ui.painter_at(resp.rect).circle_filled(
+                    resp.rect.center(),
+                    4.0,
+                    Color32::from_rgb(c[0], c[1], c[2]),
+                );
+                ui.label(sp.label.as_str());
+                let pos = e.species_weights.iter().position(|(i, _)| *i == si);
+                let mut w = pos.map_or(0.0, |k| e.species_weights[k].1);
+                let before = w;
+                ui.add(egui::DragValue::new(&mut w).speed(0.05).clamp_range(0.0..=20.0));
+                if (w - before).abs() > f32::EPSILON {
+                    match pos {
+                        Some(k) => {
+                            if w <= 0.0 {
+                                e.species_weights.remove(k);
+                            } else {
+                                e.species_weights[k].1 = w;
+                            }
+                        }
+                        None => {
+                            if w > 0.0 {
+                                e.species_weights.push((si, w));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+}
+
 // --- App impl -----------------------------------------------------------------
 
 impl ForestApp {
@@ -865,8 +991,6 @@ impl ForestApp {
             preset_mix: Vec::new(),
         });
     }
-
-
 }
 
 impl eframe::App for ForestApp {
@@ -1155,129 +1279,84 @@ impl ForestApp {
                 ));
             });
 
+
         // Granica lasu (krzewy/podrost)
         CollapsingHeader::new("🧱 Granica lasu")
             .default_open(false)
             .show(ui, |ui| {
                 let d_edges = EdgeSettings::default();
-                let e = &mut self.project.edges;
-                setting_bool(
-                    ui,
-                    "Włącz pas graniczny (krzewy wzdłuż krawędzi lasu)",
-                    "",
-                    &mut e.enabled,
-                    d_edges.enabled,
+                let species_snap = self.project.species.clone();
+                ui_edge_settings(ui, &mut self.project.edges, &d_edges, &species_snap);
+            });
+
+        // Wycinanie po kolorach maski (+ bufor) — usuwa wygenerowane obiekty
+        CollapsingHeader::new("✂ Wycinanie (kolor + bufor)")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.small(
+                    "Usuwa WYGENEROWANE obiekty w buforze wokół pikseli danego koloru \
+                     (działa też na obszary rysowane). Nakłada się ponownie przy każdym \
+                     generowaniu. Bufor zaokrąglany do piksela maski.",
                 );
-                ui.add_enabled_ui(e.enabled, |ui| {
+                ui.separator();
+                let d = ForestProject::default();
+                let p = &mut self.project;
+                if p.cut_zones.is_empty() {
+                    ui.small("Brak stref wycinania.");
+                }
+                let mut to_remove: Option<usize> = None;
+                for (ci, cz) in p.cut_zones.iter_mut().enumerate() {
+                    let [r, g, b] = cz.color.0;
                     ui.horizontal(|ui| {
-                        let m = (e.band_width_m - d_edges.band_width_m).abs() > 1e-9;
-                        lbl_mod(ui, "Szerokość pasa [m]:", m);
+                        let (_rect, resp) =
+                            ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                        ui.painter_at(resp.rect)
+                            .rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
+                        ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+                        ui.label("Bufor [m]:");
                         ui.add(
-                            egui::DragValue::new(&mut e.band_width_m)
-                                .speed(1.0)
-                                .clamp_range(1.0..=300.0),
-                        );
-                        if reset_btn(ui, m) {
-                            e.band_width_m = d_edges.band_width_m;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        let m = (e.density_per_ha - d_edges.density_per_ha).abs() > 1e-9;
-                        lbl_mod(ui, "Gęstość [szt/ha]:", m);
-                        ui.add(
-                            egui::DragValue::new(&mut e.density_per_ha)
-                                .speed(1.0)
-                                .clamp_range(1.0..=5000.0),
-                        );
-                        if reset_btn(ui, m) {
-                            e.density_per_ha = d_edges.density_per_ha;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        let m = e.blend != d_edges.blend;
-                        let r = ui.checkbox(&mut e.blend, "Wtapianie pasa")
-                            .on_hover_text("Gęstość zanika wraz z odległością od granicy \
-                                            (najgęściej przy samej krawędzi lasu) — bez twardej linii krzaków")
-                            .changed();
-                        if reset_btn(ui, m) {
-                            e.blend = d_edges.blend;
-                        }
-                        let _ = r;
-                    });
-                    ui.horizontal(|ui| {
-                        let m = (e.jagged_m - d_edges.jagged_m).abs() > 1e-9;
-                        lbl_mod(ui, "Poszarpanie granicy [m]:", m);
-                        if reset_btn(ui, m) {
-                            e.jagged_m = d_edges.jagged_m;
-                        }
-                    });
-                    horiz_tip(ui, "Jak głęboko od krawędzi gęstość drzew narasta \
-                                    0 -> pełna. Otwarte, naturalne obrzeża lasu.", |ui| {
-                        let m = (e.blend_inside_m - d_edges.blend_inside_m).abs() > 1e-9;
-                        lbl_mod(ui, "Wtapianie w las [m]:", m);
-                        ui.add(
-                            egui::DragValue::new(&mut e.blend_inside_m)
+                            egui::DragValue::new(&mut cz.margin_m)
                                 .speed(1.0)
                                 .clamp_range(0.0..=500.0),
                         );
-                        if reset_btn(ui, m) {
-                            e.blend_inside_m = d_edges.blend_inside_m;
+                        if ui.button("✖").clicked() {
+                            to_remove = Some(ci);
                         }
                     });
-                    ui.horizontal(|ui| {
-                        ui.small("Wagi gatunków granicy:");
-                        let m = e.species_weights != d_edges.species_weights;
-                        if reset_btn(ui, m) {
-                            // przywróć domyślne krzewy, odfiltrowując spoza listy gatunków
-                            let n = self.project.species.len();
-                            e.species_weights = d_edges
-                                .species_weights
-                                .iter()
-                                .filter(|(i, _)| (*i as usize) < n)
-                                .copied()
-                                .collect();
-                        }
-                    });
-                    let n_species = self.project.species.len();
-                    for si in 0..n_species {
-                        let sp = &self.project.species[si];
-                        let c = species_preview_color(si);
-                        ui.horizontal(|ui| {
-                            let (_r, resp) =
-                                ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
-                            ui.painter_at(resp.rect).circle_filled(
-                                resp.rect.center(),
-                                4.0,
-                                Color32::from_rgb(c[0], c[1], c[2]),
-                            );
-                            ui.label(sp.label.as_str());
-                            let pos = e.species_weights.iter().position(|(i, _)| *i == si);
-                            let mut w = pos.map_or(0.0, |p_| e.species_weights[p_].1);
-                            let before = w;
-                            ui.add(
-                                egui::DragValue::new(&mut w)
-                                    .speed(0.05)
-                                    .clamp_range(0.0..=20.0),
-                            );
-                            if (w - before).abs() > f32::EPSILON {
-                                match pos {
-                                    Some(p_) => {
-                                        if w <= 0.0 {
-                                            e.species_weights.remove(p_);
-                                        } else {
-                                            e.species_weights[p_].1 = w;
-                                        }
-                                    }
-                                    None => {
-                                        if w > 0.0 {
-                                            e.species_weights.push((si, w));
-                                        }
-                                    }
-                                }
+                }
+                if let Some(i) = to_remove {
+                    p.cut_zones.remove(i);
+                }
+
+                // dodawanie z kolorów maski
+                if let Some(m) = &self.mask {
+                    ui.small("Dodaj strefę z koloru maski:");
+                    let hist = m.color_histogram(256);
+                    let used: Vec<Rgb8> =
+                        p.cut_zones.iter().map(|c| c.color).collect();
+                    egui::Grid::new("cut_grid").num_columns(6).show(ui, |ui| {
+                        for (c, n) in hist.iter().filter(|(c, _)| !used.contains(c)).take(12) {
+                            let cc = *c;
+                            let [r, g, b] = cc.0;
+                            let (_rect, resp) =
+                                ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
+                            ui.painter_at(resp.rect)
+                                .rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
+                            if resp.clicked() {
+                                p.cut_zones.push(forest_core::preset::CutZone {
+                                    color: cc,
+                                    margin_m: 10.0,
+                                });
                             }
-                        });
-                    }
-                });
+                            ui.weak(format!("{}", n));
+                        }
+                    });
+                } else {
+                    ui.small("(wczytaj maskę, aby wybierać kolory)");
+                }
+                if p.cut_zones.len() != d.cut_zones.len() {
+                    ui.small("Strefy działają po kliknięciu „▶ Generuj”.");
+                }
             });
 
         // Filtry
@@ -1509,8 +1588,8 @@ impl ForestApp {
                 match &self.stats {
                     Some(s) => {
                         ui.label(format!(
-                            "Razem: {} obiektów | granica: {} | {} ms",
-                            s.total, s.edge_count, s.elapsed_ms
+                            "Razem: {} obiektów | granica: {} | wycięto: {} | {} ms",
+                            s.total, s.edge_count, s.removed_cut, s.elapsed_ms
                         ));
                         ui.separator();
                         if s.per_source.is_empty() {
@@ -1986,6 +2065,7 @@ impl ForestApp {
                 ui.separator();
                 let mut to_remove: Option<usize> = None;
                 let species_snap_a = self.project.species.clone();
+                let global_edges_snap = self.project.edges.clone();
                 let preset_list_a: Vec<(String, PSnap)> = self
                     .all_presets()
                     .into_iter()
@@ -2057,6 +2137,37 @@ impl ForestApp {
                                 ));
                             }
                         });
+
+                        // granica tego obszaru (nadpisuje globalną)
+                        let mut own = a.edges.is_some();
+                        if ui
+                            .checkbox(&mut own, "Własna granica")
+                            .on_hover_text(
+                                "Nadpisuje globalne ustawienia granicy dla tego obszaru",
+                            )
+                            .changed()
+                        {
+                            a.edges = if own {
+                                Some(global_edges_snap.clone())
+                            } else {
+                                None
+                            };
+                        }
+                        match a.edges.as_mut() {
+                            Some(ge) => {
+                                ui.indent(format!("aedge{ai}"), |ui| {
+                                    ui.small("⟲ przywraca wartości z globalnej granicy");
+                                    ui_edge_settings(ui, ge, &global_edges_snap, &species_snap_a);
+                                });
+                            }
+                            None => {
+                                ui.small(format!(
+                                    "Używa granicy globalnej (pas {:.0} m, {:.0}/ha)",
+                                    global_edges_snap.band_width_m,
+                                    global_edges_snap.density_per_ha
+                                ));
+                            }
+                        }
                     });
                 }
                 if let Some(i) = to_remove {

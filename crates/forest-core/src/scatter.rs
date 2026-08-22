@@ -1,4 +1,4 @@
-//! Silnik rozrzutu roślinności: Poisson-disk (dart throwing z siatką przestrzenną),
+﻿//! Silnik rozrzutu roślinności: Poisson-disk (dart throwing z siatką przestrzenną),
 //! szum polan, filtry wysokości/spadku, wykluczenia i proporcje gatunków.
 //!
 //! Źródła punktów (wspólna siatka odstępów):
@@ -37,6 +37,8 @@ pub struct GenStats {
     pub per_source: Vec<(String, usize)>,
     /// Obiekty pasa granicznego.
     pub edge_count: usize,
+    /// Obiekty usunięte przez strefy wycinania (kolor maski + bufor).
+    pub removed_cut: usize,
     pub rejected_spacing: usize,
     pub rejected_filters: usize,
     pub rejected_exclusion: usize,
@@ -58,6 +60,12 @@ impl GenStats {
         }
         if self.edge_count > 0 {
             s.push_str(&format!("\nGranica lasu: {}", self.edge_count));
+        }
+        if self.removed_cut > 0 {
+            s.push_str(&format!(
+                "\nWycięto strefami kolorów: {}",
+                self.removed_cut
+            ));
         }
         s.push_str("\nGatunki:");
         for (n, c) in &self.per_species {
@@ -238,7 +246,7 @@ fn segments_intersect(a1: &[f64; 2], a2: &[f64; 2], b1: &[f64; 2], b2: &[f64; 2]
     false
 }
 
-/// Wykrywa samoprzecięcia obrysu (O(n²)). Wielokąty samoprzecinające się
+/// Wykrywa samoprzecięcia obrysu (O(n2)). Wielokąty samoprzecinające się
 /// łamią ray-casting i shoelace'a — muszą być poprawione przez użytkownika.
 pub fn polygon_self_intersects(ring: &[[f64; 2]]) -> bool {
     let n = ring.len();
@@ -491,6 +499,17 @@ fn strip_weight(k: usize, k_total: usize, blend: bool) -> f64 {
     0.5 * (1.0 + (std::f64::consts::PI * t).cos())
 }
 
+/// Szum poszarpania granicy dla zadanej amplitudy i długości fali.
+fn make_wob(jag: f64, wl: f64, seed: u64) -> std::sync::Arc<dyn Fn(f64, f64) -> f64> {
+    std::sync::Arc::new(move |x: f64, y: f64| {
+        if jag <= 0.0 {
+            0.0
+        } else {
+            jag * (2.0 * fbm2(x / wl, y / wl, seed) - 1.0)
+        }
+    })
+}
+
 // --- Wspólny dart throwing ----------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
@@ -658,13 +677,8 @@ pub fn generate(
     let jag = project.edges.jagged_m.max(0.0);
     let wl = (project.edges.band_width_m * 3.0).max(80.0);
     let jag_seed = noise_seed ^ 0xA5A5_A5A5;
-    let wob = |x: f64, y: f64| -> f64 {
-        if jag <= 0.0 {
-            0.0
-        } else {
-            jag * (2.0 * fbm2(x / wl, y / wl, jag_seed) - 1.0)
-        }
-    };
+    // szum poszarpania dla zadanego zakresu — używane per-obszar (własna granica)
+    let wob = make_wob(jag, wl, jag_seed);
 
     let env = Env {
         project,
@@ -694,7 +708,7 @@ pub fn generate(
     } else {
         None
     };
-    let use_blend_inside = project.edges.enabled && blend_inside > 0.0;
+
 
     let mut jobs: Vec<Job> = Vec::new();
     let mut max_min_dist = 1.0f64;
@@ -756,13 +770,26 @@ pub fn generate(
                 rings: vec![ring.clone()],
             };
             let ring_c2 = ring.clone();
+
+            // indywidualna granica tego obszaru (None = globalna)
+            let eff_edges = area.edges.as_ref().unwrap_or(&project.edges);
+            let jag_a = eff_edges.jagged_m.max(0.0);
+            let wl_a = (eff_edges.band_width_m * 3.0).max(80.0);
+            let wob_a = make_wob(jag_a, wl_a, jag_seed);
+            let blend_in_a = if eff_edges.enabled {
+                eff_edges.blend_inside_m.max(0.0)
+            } else {
+                0.0
+            };
+
             // poszarpany brzeg: podpisana odległość od granicy + szum
             let (bmin_x, bmin_y, bmax_x, bmax_y) = bbox_of(ring);
+            let margin_jag = jag_a;
             let (min_x, min_y, max_x, max_y) = (
-                (bmin_x - jag).max(0.0),
-                (bmin_y - jag).max(0.0),
-                (bmax_x + jag).min(size),
-                (bmax_y + jag).min(size),
+                (bmin_x - margin_jag).max(0.0),
+                (bmin_y - margin_jag).max(0.0),
+                (bmax_x + margin_jag).min(size),
+                (bmax_y + margin_jag).min(size),
             );
             jobs.push(Job {
                 label: area.label.clone(),
@@ -779,10 +806,10 @@ pub fn generate(
                             let inside = point_in_polygon(&poly, x, y);
                             let dist = point_ring_distance(x, y, &ring_c2);
                             let signed = if inside { dist } else { -dist };
-                            if signed > wob(x, y) {
-                                // wtapianie w głąb: przy brzegu rzadsze drzewa
-                                if use_blend_inside && signed >= 0.0 && signed < blend_inside {
-                                    let t = (signed / blend_inside).clamp(0.0, 1.0);
+                            if signed > wob_a(x, y) {
+                                // wtapianie w głąb (indywidualne dla obszaru)
+                                if blend_in_a > 0.0 && signed >= 0.0 && signed < blend_in_a {
+                                    let t = (signed / blend_in_a).clamp(0.0, 1.0);
                                     if rng.gen::<f64>() > smoothstep(t) {
                                         continue;
                                     }
@@ -856,20 +883,21 @@ pub fn generate(
                 let s_hi = max_s * ((k + 1) as f64) / EDGE_STRIPS as f64;
                 let set: &[(u32, u8)] = band_set;
                 let width = m.width;
-                jobs.push(Job {
-                    label: format!(
-                        "Granica – {} ({}/{})",
-                        project.zones[*zi].label,
-                        k + 1,
-                        EDGE_STRIPS
-                    ),
-                    target: strip_target,
-                    min_dist: d,
-                    cum: ecum.clone(),
-                    source_index: nz + na,
-                    is_edge: true,
-                    cand: Box::new(move |rng: &mut StdRng| {
-                        if set.is_empty() {
+                    let wob = wob.clone();
+                    jobs.push(Job {
+                        label: format!(
+                            "Granica – {} ({}/{})",
+                            project.zones[*zi].label,
+                            k + 1,
+                            EDGE_STRIPS
+                        ),
+                        target: strip_target,
+                        min_dist: d,
+                        cum: ecum.clone(),
+                        source_index: nz + na,
+                        is_edge: true,
+                        cand: Box::new(move |rng: &mut StdRng| {
+                            if set.is_empty() {
                             return None;
                         }
                         let (idx, lvl) = set[rng.gen_range(0..set.len())];
@@ -887,31 +915,42 @@ pub fn generate(
                 });
             }
         }
+    }
 
-        // pas wokół granic poligonów (obie strony pierścienia), też w warstwach
-        if project.use_areas {
+    // pas wokół granic poligonów (obie strony pierścienia), też w warstwach
+    // — każdy obszar może mieć WŁASNĄ granicę (nadpisuje globalną),
+    //   niezależnie od globalnego przełącznika
+    if project.use_areas {
             for (_ai, area) in project.areas.iter().enumerate() {
+                let eff = area.edges.as_ref().unwrap_or(&project.edges);
+                if !eff.enabled {
+                    continue;
+                }
                 let ring = &area.polygon;
                 if ring.len() < 3 {
                     continue;
                 }
+                let band_a = eff.band_width_m;
+                let jag_a = eff.jagged_m.max(0.0);
+                let wob_a = make_wob(jag_a, (band_a * 3.0).max(80.0), jag_seed);
+                let ecum_a = cumulative(&eff.species_weights);
+
                 let perim = polygon_perimeter(ring);
                 let inner = polygon_area(ring);
-                let area_m2 = (perim * 2.0 * band).min(inner * 1.5);
+                let area_m2 = (perim * 2.0 * band_a).min(inner * 1.5);
                 if area_m2 <= 0.0 {
                     continue;
                 }
                 let base_target =
-                    (area_m2 / 10_000.0 * f64::from(project.edges.density_per_ha)).round()
-                        as usize;
+                    (area_m2 / 10_000.0 * f64::from(eff.density_per_ha)).round() as usize;
                 if base_target == 0 {
                     continue;
                 }
                 let wsum: f64 = (0..EDGE_STRIPS)
-                    .map(|k| strip_weight(k, EDGE_STRIPS, blend))
+                    .map(|k| strip_weight(k, EDGE_STRIPS, eff.blend))
                     .sum();
                 let (min_x, min_y, max_x, max_y) = bbox_of(ring);
-                let margin = band + jag;
+                let margin = band_a + jag_a;
                 let (min_x, min_y, max_x, max_y) = (
                     (min_x - margin).max(0.0),
                     (min_y - margin).max(0.0),
@@ -920,7 +959,7 @@ pub fn generate(
                 );
 
                 for k in 0..EDGE_STRIPS {
-                    let wk = strip_weight(k, EDGE_STRIPS, blend);
+                    let wk = strip_weight(k, EDGE_STRIPS, eff.blend);
                     let frac = wk / wsum;
                     let strip_target = if k == EDGE_STRIPS - 1 {
                         base_target.saturating_sub(
@@ -938,9 +977,10 @@ pub fn generate(
                     max_min_dist = max_min_dist.max(d);
                     total_target += strip_target;
 
-                    let s_lo = band * (k as f64) / EDGE_STRIPS as f64;
-                    let s_hi = band * ((k + 1) as f64) / EDGE_STRIPS as f64;
+                    let s_lo = band_a * (k as f64) / EDGE_STRIPS as f64;
+                    let s_hi = band_a * ((k + 1) as f64) / EDGE_STRIPS as f64;
                     let ring_c = ring.clone();
+                    let wob_a = wob_a.clone();
                     jobs.push(Job {
                         label: format!(
                             "Granica – {} ({}/{})",
@@ -950,14 +990,14 @@ pub fn generate(
                         ),
                         target: strip_target,
                         min_dist: d,
-                        cum: ecum.clone(),
+                        cum: ecum_a.clone(),
                         source_index: nz + na,
                         is_edge: true,
                         cand: Box::new(move |rng: &mut StdRng| {
                             for _ in 0..24 {
                                 let x = rng.gen_range(min_x..max_x);
                                 let y = rng.gen_range(min_y..max_y);
-                                let s = point_ring_distance(x, y, &ring_c) + wob(x, y);
+                                let s = point_ring_distance(x, y, &ring_c) + wob_a(x, y);
                                 if s >= s_lo && s < s_hi {
                                     return Some((x, y));
                                 }
@@ -967,7 +1007,6 @@ pub fn generate(
                     });
                 }
             }
-        }
     }
 
     if total_target == 0 {
@@ -994,6 +1033,11 @@ pub fn generate(
     let n_jobs = jobs.len();
     let span = 1.0 / n_jobs.max(1) as f64;
     let rng = &mut StdRng::seed_from_u64(project.seed);
+    // etykiety źródeł do korekty statystyk po wycięciu
+    let source_labels: Vec<(usize, String)> = jobs
+        .iter()
+        .map(|j| (j.source_index, j.label.clone()))
+        .collect();
 
     for (ji, job) in jobs.iter_mut().enumerate() {
         let prev_total = stats.total;
@@ -1017,6 +1061,98 @@ pub fn generate(
             stats.edge_count += stats.total - prev_total;
         }
         stats.per_source.push((job.label.clone(), accepted));
+    }
+
+    // --- Wycinanie po kolorach maski (+ bufor) ---------------------------------
+    if !project.cut_zones.is_empty() {
+        let Some(m) = mask else {
+            return Err(
+                "Projekt ma strefy wycinania, ale nie wczytano maski — \
+                 wycinanie wymaga maski do oceny kolorów."
+                    .into(),
+            );
+        };
+        use std::collections::HashSet;
+        let mut cut_set: HashSet<u32> = HashSet::new();
+        for cz in &project.cut_zones {
+            let mp = ((f64::from(cz.margin_m) / ps).ceil() as usize).clamp(1, 4096);
+            let mut local: HashSet<u32> = HashSet::new();
+            let mut frontier: Vec<u32> = Vec::new();
+            for y in 0..m.height {
+                for x in 0..m.width {
+                    if m.alpha(x, y) < 128 {
+                        continue;
+                    }
+                    if m.pixel(x, y).dist(&cz.color) <= project.color_tolerance {
+                        let i = y * m.width + x;
+                        if local.insert(i as u32) {
+                            frontier.push(i as u32);
+                        }
+                    }
+                }
+            }
+            for _level in 0..mp {
+                if frontier.is_empty() {
+                    break;
+                }
+                let mut next = Vec::new();
+                for &idx in &frontier {
+                    let x = idx % m.width;
+                    let y = idx / m.width;
+                    let ci = idx as usize;
+                    let mut neigh: [Option<usize>; 4] = [None; 4];
+                    if x > 0 {
+                        neigh[0] = Some(ci - 1);
+                    }
+                    if x + 1 < m.width {
+                        neigh[1] = Some(ci + 1);
+                    }
+                    if y > 0 {
+                        neigh[2] = Some(ci - m.width as usize);
+                    }
+                    if y + 1 < m.height {
+                        neigh[3] = Some(ci + m.width as usize);
+                    }
+                    for n in neigh.into_iter().flatten() {
+                        if local.insert(n as u32) {
+                            next.push(n as u32);
+                        }
+                    }
+                }
+                frontier = next;
+            }
+            cut_set.extend(local);
+        }
+
+        let before = objects.len();
+        objects.retain(|o| {
+            let fx = o.x / ps;
+            let fy_top = (size - o.y) / ps;
+            if fx < 0.0 || fy_top < 0.0 || fx >= f64::from(m.width) || fy_top >= f64::from(m.height)
+            {
+                return true; // poza maską — nie oceniamy
+            }
+            let idx = (fy_top as u32) * m.width + (fx as u32);
+            !cut_set.contains(&idx)
+        });
+        stats.removed_cut = before - objects.len();
+        stats.total = objects.len();
+        // przelicz liczniki gatunków po wycięciu
+        for (_, c) in stats.per_species.iter_mut() {
+            *c = 0;
+        }
+        for o in &objects {
+            stats.per_species[o.species_index].1 += 1;
+        }
+        // przelicz per_source od zera na podstawie zone_index
+        for (_, c) in stats.per_source.iter_mut() {
+            *c = 0;
+        }
+        for o in &objects {
+            if let Some(pos) = source_labels.iter().position(|(si, _)| *si == o.zone_index) {
+                stats.per_source[pos].1 += 1;
+            }
+        }
     }
 
     progress(1.0);
@@ -1107,7 +1243,7 @@ fn fbm2(x: f64, y: f64, seed: u64) -> f64 {
         / 0.875
 }
 
-/// Próg fbm tak, aby odrzucona część obszaru ≈ `strength`.
+/// Próg fbm tak, aby odrzucona część obszaru ? `strength`.
 /// LUT odpowiada przybliżonej dystrybuancie fbm (mu~0.5, sigma~0.12).
 fn clearing_threshold(strength: f64) -> f64 {
     const LUT: [(f64, f64); 11] = [
@@ -1367,6 +1503,7 @@ mod tests {
             species_weights: vec![(0, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
+            edges: None,
         });
         // 16 ha * 200/ha = 3200 celów
         let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
@@ -1391,6 +1528,7 @@ mod tests {
             species_weights: vec![(1, 1.0)], // model b_1f tylko z obszaru
             polygon: square_ring(350.0, 350.0, 650.0, 650.0),
             preset_mix: Vec::new(),
+            edges: None,
         });
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
@@ -1479,6 +1617,7 @@ mod tests {
             species_weights: vec![(0, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
+            edges: None,
         });
         proj.edges = EdgeSettings {
             enabled: true,
@@ -1526,6 +1665,7 @@ mod tests {
             species_weights: vec![(0, 1.0)],
             polygon: vec![[0.0, 0.0], [100.0, 100.0], [100.0, 0.0], [0.0, 100.0]],
             preset_mix: Vec::new(),
+            edges: None,
         });
         let err = proj.validate().unwrap_err();
         assert!(err.contains("przecina sam siebie"), "{err}");
@@ -1543,6 +1683,7 @@ mod tests {
             species_weights: vec![(1, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
+            edges: None,
         });
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
@@ -1577,6 +1718,7 @@ mod tests {
             species_weights: vec![(0, 1.0)],
             polygon: square_ring(300.0, 300.0, 700.0, 700.0),
             preset_mix: Vec::new(),
+            edges: None,
         });
         let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 1_000);
@@ -1651,5 +1793,101 @@ mod tests {
         let mask = mask_with_rect(60, 60, (10, 10, 40, 40), green);
         let (_, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
         assert_eq!(stats.edge_count, 0);
+    }
+
+    #[test]
+    fn area_can_have_own_edges_overriding_global() {
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.edges.enabled = false; // globalnie bez granicy
+
+        let mk_area = |label: &str, x0: f64, own: bool| AreaDef {
+            label: label.into(),
+            density_per_ha: 120.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: square_ring(x0, 300.0, x0 + 250.0, 700.0),
+            preset_mix: Vec::new(),
+            edges: if own {
+                Some(EdgeSettings {
+                    enabled: true,
+                    band_width_m: 25.0,
+                    density_per_ha: 1500.0,
+                    species_weights: vec![(1, 1.0)],
+                    blend: false,
+                    jagged_m: 0.0,
+                    blend_inside_m: 0.0,
+                })
+            } else {
+                None
+            },
+        };
+        proj.areas.push(mk_area("Z granicą", 50.0, true));
+        proj.areas.push(mk_area("Bez granicy", 620.0, false));
+
+        let (objs, stats) = generate(&proj, None, None, None, &|_| {}).unwrap();
+        assert!(stats.edge_count > 0);
+
+        // krzaki (b_1f) tylko przy obszarze "Z granicą"
+        let near_a1 = objs.iter().filter(|o| {
+            o.model == "b_1f"
+                && point_ring_distance(o.x, o.y, &square_ring(50.0, 300.0, 300.0, 700.0)) <= 35.0
+        }).count();
+        let near_a2 = objs.iter().filter(|o| {
+            o.model == "b_1f"
+                && point_ring_distance(o.x, o.y, &square_ring(620.0, 300.0, 870.0, 700.0)) <= 35.0
+        }).count();
+        assert!(near_a1 > 20, "A1={near_a1}");
+        assert_eq!(near_a2, 0, "A2={near_a2}");
+    }
+
+    #[test]
+    fn cut_zone_removes_objects_near_color_plus_margin() {
+        // las z POLYGONU + szary pas "drogi" namalowany na masce;
+        // wycinanie usuwa drzewa z pasa + bufora, mimo że źródłem
+        // jest poligon, a nie kolor maski
+        let gray = Rgb8([128, 128, 128]);
+        let mut img = image::RgbaImage::new(100, 100);
+        for y in 0..100u32 {
+            for x in 0..100u32 {
+                let c = if (40..60).contains(&x) { gray } else { Rgb8([255, 255, 255]) };
+                img.put_pixel(x, y, image::Rgba([c.r(), c.g(), c.b(), 255]));
+            }
+        }
+        let mask = MaskImage::from_dynamic(image::DynamicImage::ImageRgba8(img));
+
+        let mk_proj = |with_cut: bool| {
+            let mut proj = zone_project(&[]);
+            proj.zones.clear();
+            proj.use_mask_zones = false;
+            proj.use_areas = true;
+            if with_cut {
+                proj.cut_zones = vec![crate::preset::CutZone { color: gray, margin_m: 10.0 }];
+            }
+            proj.areas.push(AreaDef {
+                label: "Las".into(),
+                density_per_ha: 150.0,
+                species_weights: vec![(0, 1.0)],
+                polygon: square_ring(300.0, 300.0, 700.0, 700.0),
+                preset_mix: Vec::new(),
+                edges: None,
+            });
+            proj
+        };
+
+        let proj = mk_proj(true);
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, &|_| {}).unwrap();
+        assert!(stats.total > 500, "total={}", stats.total);
+        assert!(stats.removed_cut > 0, "removed={}", stats.removed_cut);
+        assert_eq!(stats.total, objs.len());
+        for o in &objs {
+            // dylatacja w pikselach maski: bufor 10 m przy ps=10 m dodaje
+            // dokładnie jeden pierścień pikseli -> wycięcie [390, 610)
+            assert!(o.x < 390.0 || o.x >= 610.0, "obiekt w wycięciu x={}", o.x);
+        }
+
+        // kontrola: bez wycinania pas miał drzewa
+        let proj2 = mk_proj(false);
+        let (objs2, _) = generate(&proj2, Some(&mask), None, None, &|_| {}).unwrap();
+        assert!(objs2.iter().any(|o| o.x >= 400.0 && o.x <= 600.0));
     }
 }
