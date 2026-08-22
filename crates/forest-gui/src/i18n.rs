@@ -309,6 +309,14 @@ const DICT: &[Entry] = &[
     ("Próbki kolorów:", "Color samples:", "Farbproben:"),
     ("Wyczyść", "Clear", "Löschen"),
     ("Inne", "Other", "Andere"),
+    ("Aktywny", "Active", "Aktiv"),
+    ("Tryb próbkowania", "Sampling mode", "Sampling-Modus"),
+    (
+        "(brak próbek — kliknij 🎯 i próbkuj na mapie)",
+        "(no samples — click 🎯 and sample on map)",
+        "(keine Proben — 🎯 klicken und auf Karte sampeln)",
+    ),
+    ("Bierze udział w generowaniu", "Included in generation", "Nimmt an Generierung teil"),
     ("Kopiuj do „Moje presety” (edytowalna kopia)", "Copy to “My presets” (editable copy)", "Nach „Meine Presets“ kopieren (editierbare Kopie)"),
     // --- napisy wcześniej zahardkodowane (widoczne w UI) ---
     (

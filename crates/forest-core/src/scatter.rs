@@ -754,6 +754,9 @@ pub fn generate(
     // --- Źródło: obszary rysowane (poligony) --------------------------------------
     if project.use_areas {
         for (ai, area) in project.areas.iter().enumerate() {
+            if !area.enabled {
+                continue;
+            }
             let ring = &area.polygon;
             if ring.len() < 3 {
                 continue;
@@ -961,6 +964,9 @@ pub fn generate(
     //   niezależnie od globalnego przełącznika
     if project.use_areas {
             for (_ai, area) in project.areas.iter().enumerate() {
+                if !area.enabled {
+                    continue;
+                }
                 let eff = area.edges.as_ref().unwrap_or(&project.edges);
                 if !eff.enabled {
                     continue;
@@ -1608,6 +1614,7 @@ mod tests {
         proj.zones.clear();
         proj.edges.jagged_m = 0.0; // ścisłe zawieranie dla tego testu
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Dwór".into(),
             density_per_ha: 200.0,
             species_weights: vec![(0, 1.0)],
@@ -1634,6 +1641,7 @@ mod tests {
         let green = Rgb8([0, 200, 0]);
         let mut proj = zone_project(&[green]);
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Sad".into(),
             density_per_ha: 150.0,
             species_weights: vec![(1, 1.0)], // model b_1f tylko z obszaru
@@ -1724,6 +1732,7 @@ mod tests {
         let mut proj = zone_project(&[]);
         proj.zones.clear();
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Gaj".into(),
             density_per_ha: 150.0,
             species_weights: vec![(0, 1.0)],
@@ -1773,6 +1782,7 @@ mod tests {
         let mut proj = zone_project(&[]);
         proj.zones.clear();
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Motylek".into(),
             density_per_ha: 100.0,
             species_weights: vec![(0, 1.0)],
@@ -1792,6 +1802,7 @@ mod tests {
         proj.use_mask_zones = false;
         proj.edges.jagged_m = 0.0;
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Tylko poligon".into(),
             density_per_ha: 150.0,
             species_weights: vec![(1, 1.0)],
@@ -1828,6 +1839,7 @@ mod tests {
         proj.zones.clear();
         proj.edges.jagged_m = 60.0;
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Ragged".into(),
             density_per_ha: 200.0,
             species_weights: vec![(0, 1.0)],
@@ -1918,6 +1930,7 @@ mod tests {
         proj.edges.enabled = false; // globalnie bez granicy
 
         let mk_area = |label: &str, x0: f64, own: bool| AreaDef {
+            enabled: true,
             label: label.into(),
             density_per_ha: 120.0,
             species_weights: vec![(0, 1.0)],
@@ -1981,6 +1994,7 @@ mod tests {
                 proj.cut_zones = vec![crate::preset::CutZone { color: gray, margin_m: 10.0 }];
             }
             proj.areas.push(AreaDef {
+                enabled: true,
                 label: "Las".into(),
                 density_per_ha: 150.0,
                 species_weights: vec![(0, 1.0)],
@@ -2029,6 +2043,7 @@ mod tests {
         proj.use_areas = true;
         proj.edges.jagged_m = 0.0;
         proj.areas.push(AreaDef {
+            enabled: true,
             label: "Inteligentny".into(),
             density_per_ha: 200.0,
             species_weights: vec![(0, 1.0)],
@@ -2056,6 +2071,7 @@ mod tests {
         proj2.use_areas = true;
         proj2.edges.jagged_m = 0.0;
         proj2.areas.push(AreaDef {
+            enabled: true,
             label: "Bez filtra".into(),
             density_per_ha: 200.0,
             species_weights: vec![(0, 1.0)],

@@ -535,6 +535,7 @@ impl ForestApp {
         // obszar startuje nieskonfigurowany: 0 obiektów, dopóki nie dodasz
         // presetów (🧩 Miks presetów) w panelu Obszary
         self.project.areas.push(forest_core::preset::AreaDef {
+            enabled: true,
             label,
             density_per_ha: 0.0,
             species_weights: Vec::new(),
@@ -2348,6 +2349,8 @@ ui.text_edit_singleline(&mut sp.label);
                             let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                             ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, col);
                             ui.text_edit_singleline(&mut a.label);
+                            ui.checkbox(&mut a.enabled, tr(lang, "Aktywny"))
+                                .on_hover_text(tr(lang, "Bierze udział w generowaniu"));
                             if ui
                                 .button(if self.editing_area == Some(ai) { "✏ WŁ" } else { "✏" })
                                 .on_hover_text(tr(lang, "Edytuj obszar (wierzchołki)"))
@@ -2432,6 +2435,11 @@ ui.text_edit_singleline(&mut sp.label);
 
                         // 🎯 inteligentne generowanie — kolory z podkładu
                         ui.separator();
+                        let n_samp = a
+                            .color_filter
+                            .as_ref()
+                            .map(|f| f.samples.len())
+                            .unwrap_or(0);
                         ui.horizontal(|ui| {
                             let s_on = self.sampling_area == Some(ai);
                             if ui
@@ -2457,62 +2465,66 @@ ui.text_edit_singleline(&mut sp.label);
                                         Some("Najpierw wczytaj podkład satelitarny (📁 Pliki).".into());
                                 }
                             }
-                            let n_samp = a
-                                .color_filter
-                                .as_ref()
-                                .map(|f| f.samples.len())
-                                .unwrap_or(0);
-                            ui.label(tr(lang, "Próbki kolorów:"));
-                            if n_samp > 0 {
-                                ui.strong(format!("{n_samp}"));
-                            } else {
-                                ui.weak("0");
+                            ui.label(tr(lang, "Tryb próbkowania"));
+                            if s_on {
+                                ui.colored_label(Color32::YELLOW, "●");
                             }
                         });
-                        if let Some(cf) = a.color_filter.as_mut() {
-                            if !cf.samples.is_empty() && self.sat_image.is_none() {
-                                ui.colored_label(
-                                    ORANGE_MOD,
-                                    "⚠ Brak podkładu — filtr nie zadziała",
-                                );
-                            }
-                            let mut to_remove: Option<usize> = None;
-                            for (si_, sm) in cf.samples.iter().enumerate() {
-                                let [r, g, b] = sm.0;
-                                ui.horizontal(|ui| {
-                                    let (_rect, resp) = ui
-                                        .allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                                    ui.painter_at(resp.rect).rect_filled(
-                                        resp.rect,
-                                        2.0,
-                                        Color32::from_rgb(r, g, b),
+                        egui::CollapsingHeader::new(format!(
+                            "{} {}",
+                            tr(lang, "Próbki kolorów:"),
+                            n_samp
+                        ))
+                        .id_source(format!("cs{ai}"))
+                        .default_open(n_samp > 0)
+                        .show(ui, |ui| {
+                            if let Some(cf) = a.color_filter.as_mut() {
+                                if !cf.samples.is_empty() && self.sat_image.is_none() {
+                                    ui.colored_label(
+                                        ORANGE_MOD,
+                                        "⚠ Brak podkładu — filtr nie zadziała",
                                     );
-                                    ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
-                                    ui.with_layout(
-                                        egui::Layout::right_to_left(egui::Align::Center),
-                                        |ui| {
-                                            if ui.button("✖").clicked() {
-                                                to_remove = Some(si_);
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                            if let Some(i) = to_remove {
-                                cf.samples.remove(i);
-                            }
-                            ui.horizontal(|ui| {
-                                ui.label(tr(lang, "Tolerancja koloru:"));
-                                ui.add(
-                                    egui::DragValue::new(&mut cf.tolerance)
-                                        .speed(1.0)
-                                        .clamp_range(0..=255),
-                                );
-                                if ui.button(tr(lang, "Wyczyść")).clicked() {
-                                    cf.samples.clear();
                                 }
-                            });
-                        }
+                                let mut to_remove: Option<usize> = None;
+                                for (si_, sm) in cf.samples.iter().enumerate() {
+                                    let [r, g, b] = sm.0;
+                                    ui.horizontal(|ui| {
+                                        let (_rect, resp) = ui
+                                            .allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                        ui.painter_at(resp.rect).rect_filled(
+                                            resp.rect,
+                                            2.0,
+                                            Color32::from_rgb(r, g, b),
+                                        );
+                                        ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.button("✖").clicked() {
+                                                    to_remove = Some(si_);
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+                                if let Some(i) = to_remove {
+                                    cf.samples.remove(i);
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label(tr(lang, "Tolerancja koloru:"));
+                                    ui.add(
+                                        egui::DragValue::new(&mut cf.tolerance)
+                                            .speed(1.0)
+                                            .clamp_range(0..=255),
+                                    );
+                                    if ui.button(tr(lang, "Wyczyść")).clicked() {
+                                        cf.samples.clear();
+                                    }
+                                });
+                            } else {
+                                ui.small(tr(lang, "(brak próbek — kliknij 🎯 i próbkuj na mapie)"));
+                            }
+                        });
 
                         // granica tego obszaru (nadpisuje globalną)
                         let mut own = a.edges.is_some();

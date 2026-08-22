@@ -69,6 +69,9 @@ fn default_cf_tol() -> u32 {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AreaDef {
+    /// Czy obszar bierze udział w generowaniu.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub label: String,
     pub density_per_ha: f32,
     /// Wagi gatunków: (indeks do `species`, waga > 0).
