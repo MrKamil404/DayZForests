@@ -13,6 +13,7 @@ use forest_core::geojson::GeoJsonData;
 use forest_core::heightmap::AscHeightmap;
 use forest_core::mask::{MaskImage, Rgb8};
 use forest_core::preset::{ElevationMode, EdgeSettings, ForestProject, ZoneDef};
+use forest_core::species::SpeciesDef;
 use forest_core::scatter::{generate, GenStats, PlacedObject};
 use forest_core::user_presets::{UserPreset, UserPresetLibrary, DEFAULT_PRESETS_FILE};
 pub mod i18n;
@@ -85,6 +86,8 @@ struct ForestApp {
     species_color_edit: Option<usize>,
     /// Obszar, dla którego pobierane są próbki kolorów z podkładu.
     sampling_area: Option<usize>,
+    /// Wybrany źródłowy obszar do kopiowania ustawień (per obszar).
+    area_copy_src: Vec<Option<usize>>,
 
     // presety użytkownika (edytowalne kopie + własne)
     user_presets: Vec<UserPreset>,
@@ -142,6 +145,7 @@ impl ForestApp {
             editing_vertex: None,
             zone_color_edit: None,
             sampling_area: None,
+            area_copy_src: Vec::new(),
             species_color_edit: None,
             user_presets: Vec::new(),
             preset_edit_open: None,
@@ -412,6 +416,11 @@ impl ForestApp {
                     self.stats = None;
                     self.zone_color_edit = None;
                     self.sampling_area = None;
+                    self.area_copy_src = vec![None; self.project.areas.len()];
+                    self.editing_area = None;
+                    self.editing_vertex = None;
+                    self.draw_mode = false;
+                    self.draw_points.clear();
                     self.info = Some(tf(lang, "Wczytano projekt: {0}", &[path.display().to_string().as_str()]));
                     self.reload_project_files(ctx);
                     self.error = None;
@@ -544,6 +553,7 @@ impl ForestApp {
             color_filter: None,
             polygon: std::mem::take(&mut self.draw_points),
         });
+        self.area_copy_src.push(None);
         let area_label = self.project.areas.last().unwrap().label.clone();
         let ha_str = format!("{:.1}", area_ha);
         self.info = Some(tf(lang, "Dodano obszar '{0}' ({1:.1} ha). Przypisz presety w panelu 📐 Obszary, aby generował drzewa.", &[area_label.as_str(), ha_str.as_str()]));
@@ -1045,6 +1055,208 @@ impl ForestApp {
                 self.info = Some(format!("Presety zapisane: {DEFAULT_PRESETS_FILE}"));
             }
             Err(e) => self.error = Some(e),
+        }
+    }
+
+    fn export_species(&mut self) {
+        let lang = self.lang;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("species.json")
+            .save_file()
+        {
+            match serde_json::to_string_pretty(&self.project.species) {
+                Ok(json) => match std::fs::write(&path, json) {
+                    Ok(()) => {
+                        self.info = Some(tf(
+                            lang,
+                            "Wyeksportowano {0} gatunków do {1}.",
+                            &[&self.project.species.len().to_string(), &path.display().to_string()],
+                        ));
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                },
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
+
+    fn import_species(&mut self) {
+        let lang = self.lang;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    // spróbuj Vec<SpeciesDef> lub UserPresetLibrary-like wrapper
+                    let parsed: Result<Vec<SpeciesDef>, _> = serde_json::from_str(&text);
+                    match parsed {
+                        Ok(imported) => {
+                            let mut added = 0;
+                            let mut skipped = 0;
+                            for sp in imported {
+                                if self
+                                    .project
+                                    .species
+                                    .iter()
+                                    .any(|s| s.model.eq_ignore_ascii_case(&sp.model))
+                                {
+                                    skipped += 1;
+                                } else {
+                                    self.project.species.push(sp);
+                                    added += 1;
+                                }
+                            }
+                            self.info = Some(tf(
+                                lang,
+                                "Zaimportowano {0} gatunków (pominięto {1} duplikatów) z {2}.",
+                                &[
+                                    &added.to_string(),
+                                    &skipped.to_string(),
+                                    &path.display().to_string(),
+                                ],
+                            ));
+                            self.error = None;
+                        }
+                        Err(e) => self.error = Some(format!("Parse: {e}")),
+                    }
+                }
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
+
+    fn export_zones(&mut self) {
+        let lang = self.lang;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("zones.json")
+            .save_file()
+        {
+            match serde_json::to_string_pretty(&self.project.zones) {
+                Ok(json) => match std::fs::write(&path, json) {
+                    Ok(()) => {
+                        self.info = Some(tf(
+                            lang,
+                            "Wyeksportowano {0} stref do {1}.",
+                            &[&self.project.zones.len().to_string(), &path.display().to_string()],
+                        ));
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                },
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
+
+    fn import_zones(&mut self) {
+        let lang = self.lang;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match serde_json::from_str::<Vec<ZoneDef>>(&text) {
+                    Ok(mut imported) => {
+                        let n = imported.len();
+                        // walidacja kolorów: pomiń duplikaty kolorów już istniejących
+                        let existing_colors: Vec<Rgb8> =
+                            self.project.zones.iter().map(|z| z.color).collect();
+                        imported.retain(|z| !existing_colors.contains(&z.color));
+                        let added = imported.len();
+                        let skipped = n - added;
+                        self.project.zones.extend(imported);
+                        self.info = Some(tf(
+                            lang,
+                            "Zaimportowano {0} stref (pominięto {1} duplikatów) z {2}.",
+                            &[&added.to_string(), &skipped.to_string(), &path.display().to_string()],
+                        ));
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(format!("Parse: {e}")),
+                },
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
+
+    fn export_presets_dialog(&mut self) {
+        let lang = self.lang;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("presets.json")
+            .save_file()
+        {
+            let lib = UserPresetLibrary {
+                presets: self.user_presets.clone(),
+            };
+            match serde_json::to_string_pretty(&lib) {
+                Ok(json) => match std::fs::write(&path, json) {
+                    Ok(()) => {
+                        self.info = Some(tf(
+                            lang,
+                            "Wyeksportowano {0} presetów do {1}.",
+                            &[&self.user_presets.len().to_string(), &path.display().to_string()],
+                        ));
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                },
+                Err(e) => self.error = Some(e.to_string()),
+            }
+        }
+    }
+
+    fn import_presets_dialog(&mut self) {
+        let lang = self.lang;
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    // spróbuj jako UserPresetLibrary lub Vec<UserPreset>
+                    let parsed_lib: Result<UserPresetLibrary, _> = serde_json::from_str(&text);
+                    let imported = if let Ok(lib) = parsed_lib {
+                        lib.presets
+                    } else {
+                        match serde_json::from_str::<Vec<UserPreset>>(&text) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                self.error = Some(format!("Parse: {e}"));
+                                return;
+                            }
+                        }
+                    };
+                    let n = imported.len();
+                    let mut added = 0;
+                    let mut skipped = 0;
+                    for p in imported {
+                        if self
+                            .user_presets
+                            .iter()
+                            .any(|u| u.name == p.name && u.group == p.group)
+                        {
+                            skipped += 1;
+                        } else {
+                            self.user_presets.push(p);
+                            added += 1;
+                        }
+                    }
+                    self.presets_dirty = true;
+                    self.info = Some(tf(
+                        lang,
+                        "Zaimportowano {0} presetów (pominięto {1} duplikatów) z {2}.",
+                        &[&added.to_string(), &skipped.to_string(), &path.display().to_string()],
+                    ));
+                    self.error = None;
+                    let _ = n;
+                }
+                Err(e) => self.error = Some(e.to_string()),
+            }
         }
     }
 
@@ -1701,6 +1913,14 @@ impl ForestApp {
                     }
                     ui.small(tr(lang, "TB wymaga wpisu w Template Library dla każdego modelu."));
                 });
+                ui.horizontal(|ui| {
+                    if ui.button(tr(lang, "📥 Import gatunków...")).clicked() {
+                        self.import_species();
+                    }
+                    if ui.button(tr(lang, "📤 Eksport gatunków...")).clicked() {
+                        self.export_species();
+                    }
+                });
                 ui.separator();
                 let mut remove: Option<usize> = None;
                 let mut last_group = String::new();
@@ -1921,6 +2141,14 @@ ui.text_edit_singleline(&mut sp.label);
                             });
                         }
                     });
+                ui.horizontal(|ui| {
+                    if ui.button(tr(lang, "📥 Import stref...")).clicked() {
+                        self.import_zones();
+                    }
+                    if ui.button(tr(lang, "📤 Eksport stref...")).clicked() {
+                        self.export_zones();
+                    }
+                });
                 ui.separator();
 
                 let mut to_remove: Option<usize> = None;
@@ -2181,6 +2409,14 @@ ui.text_edit_singleline(&mut sp.label);
                     "Plik: {0} (katalog roboczy programu)",
                     &[DEFAULT_PRESETS_FILE],
                 ));
+                ui.horizontal(|ui| {
+                    if ui.button(tr(lang, "📥 Import presetów...")).clicked() {
+                        self.import_presets_dialog();
+                    }
+                    if ui.button(tr(lang, "📤 Eksport presetów...")).clicked() {
+                        self.export_presets_dialog();
+                    }
+                });
                 ui.separator();
 
                 if self.user_presets.is_empty() {
@@ -2342,6 +2578,12 @@ ui.text_edit_singleline(&mut sp.label);
                     .into_iter()
                     .map(|s| (s.name.clone(), s))
                     .collect();
+                if self.area_copy_src.len() != self.project.areas.len() {
+                    self.area_copy_src.resize(self.project.areas.len(), None);
+                }
+                let area_labels: Vec<String> =
+                    self.project.areas.iter().map(|ar| ar.label.clone()).collect();
+                let mut pending_copy: Option<(usize, usize)> = None;
                 for (ai, a) in self.project.areas.iter_mut().enumerate() {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
@@ -2370,6 +2612,42 @@ ui.text_edit_singleline(&mut sp.label);
                                 to_remove = Some(ai);
                             }
                         });
+                        // kopiowanie ustawień z innego obszaru
+                        if area_labels.len() > 1 {
+                            ui.horizontal(|ui| {
+                                ui.label(tr(lang, "Kopiuj z:"));
+                                let sel_text = self.area_copy_src[ai]
+                                    .and_then(|idx| area_labels.get(idx))
+                                    .cloned()
+                                    .unwrap_or_else(|| tr(lang, "— wybierz —"));
+                                egui::ComboBox::from_id_source(format!("copy_src{ai}"))
+                                    .selected_text(sel_text)
+                                    .width(140.0)
+                                    .show_ui(ui, |ui| {
+                                        for (j, label) in area_labels.iter().enumerate() {
+                                            if j == ai {
+                                                continue;
+                                            }
+                                            let is_selected = self.area_copy_src[ai] == Some(j);
+                                            if ui.selectable_label(is_selected, label).clicked() {
+                                                self.area_copy_src[ai] = Some(j);
+                                            }
+                                        }
+                                    });
+                                let can_copy = self.area_copy_src[ai].is_some_and(|src| {
+                                    src < area_labels.len() && src != ai
+                                });
+                                if ui
+                                    .add_enabled(can_copy, egui::Button::new(tr(lang, "Kopiuj")))
+                                    .on_hover_text(tr(lang, "Kopiuj ustawienia z wybranego obszaru"))
+                                    .clicked()
+                                {
+                                    if let Some(src) = self.area_copy_src[ai] {
+                                        pending_copy = Some((src, ai));
+                                    }
+                                }
+                            });
+                        }
                         ui.horizontal(|ui| {
                             ui.label(tr(lang, "Gęstość [szt/ha]:"));
                             ui.add(
@@ -2561,17 +2839,67 @@ ui.text_edit_singleline(&mut sp.label);
                         }
                     });
                 }
+                if let Some((src, dst)) = pending_copy {
+                    if src < self.project.areas.len()
+                        && dst < self.project.areas.len()
+                        && src != dst
+                    {
+                        let src_label = self.project.areas[src].label.clone();
+                        let dst_label = self.project.areas[dst].label.clone();
+                        let src_clone = self.project.areas[src].clone();
+                        let dst_area = &mut self.project.areas[dst];
+                        dst_area.enabled = src_clone.enabled;
+                        dst_area.density_per_ha = src_clone.density_per_ha;
+                        dst_area.species_weights = src_clone.species_weights;
+                        dst_area.preset_mix = src_clone.preset_mix;
+                        dst_area.edges = src_clone.edges;
+                        dst_area.color_filter = src_clone.color_filter;
+                        self.info = Some(tf(
+                            lang,
+                            "Skopiowano ustawienia z '{0}' do '{1}'.",
+                            &[&src_label, &dst_label],
+                        ));
+                    }
+                }
                 if let Some(i) = to_remove {
                     self.project.areas.remove(i);
+                    if i < self.area_copy_src.len() {
+                        self.area_copy_src.remove(i);
+                    }
+                    for v in self.area_copy_src.iter_mut() {
+                        if let Some(idx) = v {
+                            if *idx == i {
+                                *v = None;
+                            } else if *idx > i {
+                                *v = Some(*idx - 1);
+                            }
+                        }
+                    }
                     if self.editing_area == Some(i) {
                         self.editing_area = None;
                         self.editing_vertex = None;
+                    }
+                    if self.sampling_area == Some(i) {
+                        self.sampling_area = None;
+                    } else if let Some(sa) = self.sampling_area {
+                        if sa > i {
+                            self.sampling_area = Some(sa - 1);
+                        }
+                    }
+                    if let Some(ea) = self.editing_area {
+                        if ea > i {
+                            self.editing_area = Some(ea - 1);
+                        }
                     }
                 }
                 if !self.project.areas.is_empty()
                     && ui.button(tr(lang, "Wyczyść wszystkie obszary")).clicked()
                 {
                     self.project.areas.clear();
+                    self.area_copy_src.clear();
+                    self.editing_area = None;
+                    self.editing_vertex = None;
+                    self.sampling_area = None;
                 }
             });
 

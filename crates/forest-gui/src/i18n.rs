@@ -310,6 +310,11 @@ const DICT: &[Entry] = &[
     ("Wyczyść", "Clear", "Löschen"),
     ("Inne", "Other", "Andere"),
     ("Aktywny", "Active", "Aktiv"),
+    ("Kopiuj z:", "Copy from:", "Kopieren von:"),
+    ("Kopiuj", "Copy", "Kopieren"),
+    ("Kopiuj ustawienia z wybranego obszaru", "Copy settings from selected area", "Einstellungen aus gewähltem Bereich kopieren"),
+    ("Skopiowano ustawienia z '{0}' do '{1}'.", "Copied settings from '{0}' to '{1}'.", "Einstellungen von '{0}' nach '{1}' kopiert."),
+    ("— wybierz —", "— pick —", "— wählen —"),
     ("Tryb próbkowania", "Sampling mode", "Sampling-Modus"),
     (
         "(brak próbek — kliknij 🎯 i próbkuj na mapie)",
@@ -717,6 +722,20 @@ const DICT: &[Entry] = &[
     ("Mroczny bór świerkowy", "Dark spruce forest", "Dunkler Fichtenwald"),
     ("Zarośla zimowe", "Winter thickets", "Wintergebüsch"),
     ("Mieszany las letni", "Mixed summer forest", "Mischwald Sommer"),
+    // --- import/export gatunków, presetów, stref ---
+    ("📥 Import gatunków...", "📥 Import species...", "📥 Arten importieren..."),
+    ("📤 Eksport gatunków...", "📤 Export species...", "📤 Arten exportieren..."),
+    ("Wyeksportowano {0} gatunków do {1}.", "Exported {0} species to {1}.", "{0} Arten nach {1} exportiert."),
+    ("Zaimportowano {0} gatunków (pominięto {1} duplikatów) z {2}.", "Imported {0} species (skipped {1} duplicates) from {2}.", "{0} Arten importiert ({1} Duplikate übersprungen) aus {2}."),
+    ("📥 Import stref...", "📥 Import zones...", "📥 Zonen importieren..."),
+    ("📤 Eksport stref...", "📤 Export zones...", "📤 Zonen exportieren..."),
+    ("Wyeksportowano {0} stref do {1}.", "Exported {0} zones to {1}.", "{0} Zonen nach {1} exportiert."),
+    ("Zaimportowano {0} stref (pominięto {1} duplikatów) z {2}.", "Imported {0} zones (skipped {1} duplicates) from {2}.", "{0} Zonen importiert ({1} Duplikate übersprungen) aus {2}."),
+    ("📥 Import presetów...", "📥 Import presets...", "📥 Presets importieren..."),
+    ("📤 Eksport presetów...", "📤 Export presets...", "📤 Presets exportieren..."),
+    ("Wyeksportowano {0} presetów do {1}.", "Exported {0} presets to {1}.", "{0} Presets nach {1} exportiert."),
+    ("Zaimportowano {0} presetów (pominięto {1} duplikatów) z {2}.", "Imported {0} presets (skipped {1} duplicates) from {2}.", "{0} Presets importiert ({1} Duplikate übersprungen) aus {2}."),
+
 ];
 
 /// Tłumaczy tekst źródłowy (PL). Brak wpisu -> zwraca oryginał.
