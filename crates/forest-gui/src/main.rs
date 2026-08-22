@@ -530,7 +530,7 @@ impl ForestApp {
             );
             return;
         }
-        let label = format!("Obszar {}", self.project.areas.len() + 1);
+        let label = format!("{} {}", tr(self.lang, "Obszar"), self.project.areas.len() + 1);
         let area_ha = forest_core::scatter::polygon_area_m2(&self.draw_points) / 10_000.0;
         // obszar startuje nieskonfigurowany: 0 obiektów, dopóki nie dodasz
         // presetów (🧩 Miks presetów) w panelu Obszary
@@ -669,6 +669,7 @@ fn with_extension(mut path: std::path::PathBuf, ext: &str) -> std::path::PathBuf
 /// Zwraca true, gdy coś zmieniono. `presets` = łączna lista (nazwa → snap).
 fn ui_mix_rows(
     ui: &mut egui::Ui,
+    lang: Lang,
     id: &str,
     mix: &mut Vec<(String, f32)>,
     presets: &[(String, PSnap)],
@@ -681,7 +682,7 @@ fn ui_mix_rows(
             .find(|(n, _)| n == name)
             .map(|(_, s)| s.density_per_ha);
         ui.horizontal(|ui| {
-            ui.monospace(name.as_str());
+            ui.monospace(tr(lang, name.as_str()));
             if let Some(d) = density {
                 ui.weak(format!("{d:.0}/ha"));
             }
@@ -709,16 +710,16 @@ fn ui_mix_rows(
 
     // dodawanie presetu do miksu — jedno kliknięcie na pozycji listy
     ui.horizontal(|ui| {
-        ui.label("＋ Dodaj preset:");
+        ui.label(tr(lang, "Dodaj preset:"));
         egui::ComboBox::from_id_source(egui::Id::new(format!("mix_add_{id}")))
-            .selected_text("wybierz z listy…")
+            .selected_text(tr(lang, "wybierz z listy..."))
             .show_ui(ui, |ui| {
                 for (n, s) in presets.iter() {
                     let already = mix.iter().any(|(m, _)| m == n);
                     let label = if already {
-                        format!("✓ {}", n)
+                        format!("✓ {}", tr(lang, n))
                     } else {
-                        format!("{n}  ({:.0}/ha)", s.density_per_ha)
+                        format!("{}  ({:.0}/ha)", tr(lang, n), s.density_per_ha)
                     };
                     if ui
                         .add_enabled(!already, egui::Button::new(label))
@@ -730,7 +731,10 @@ fn ui_mix_rows(
                 }
             });
         if mix.len() > 1 {
-            ui.small("(udziały × sumują się do dowolnej wartości — liczone proporcjonalnie)");
+            ui.small(tr(
+                lang,
+                "(udziały → sumują się do dowolnej wartości — liczone proporcjonalnie)",
+            ));
         }
     });
     changed
@@ -1202,7 +1206,7 @@ impl ForestApp {
             if !self.draw_points.is_empty() {
                 ui.colored_label(
                     Color32::YELLOW,
-                    format!("pkt: {}", self.draw_points.len()),
+                    format!("{} {}", tr(self.lang, "pkt:"), self.draw_points.len()),
                 );
                 if ui.button("✔ Zakończ").clicked() {
                     self.finish_area();
@@ -1275,7 +1279,8 @@ impl ForestApp {
                         .paths
                         .heightmap_asc
                         .as_deref()
-                        .unwrap_or("(brak — elevation=0, obiekty na terenie)"),
+                        .map(|s| s.to_string())
+                        .unwrap_or(tr(lang, "(brak — elevation=0, obiekty na terenie)")),
                 );
 
                 if ui.button(tr(lang, "Wczytaj wykluczenia (.geojson)...")).clicked() {
@@ -1291,12 +1296,17 @@ impl ForestApp {
                         .paths
                         .exclusions_geojson
                         .as_deref()
-                        .unwrap_or("(brak wykluczeń wektorowych)"),
+                        .map(|s| s.to_string())
+                        .unwrap_or(tr(lang, "(brak wykluczeń wektorowych)")),
                 );
 
                 if let Some(m) = &self.mask {
                     ui.separator();
-                    ui.small(format!("Maska: {}x{} px", m.width, m.height));
+                    ui.small(tf(
+                        lang,
+                        "Maska: {0}x{1} px",
+                        &[&m.width.to_string(), &m.height.to_string()],
+                    ));
                 }
             });
 
@@ -1384,17 +1394,36 @@ impl ForestApp {
                     false,
                 );
                 ui.separator();
-                ui.small(format!(
-                    "Aktywne źródła: {}{}{}",
-                    if self.project.use_mask_zones { "maska " } else { "" },
-                    if self.project.use_areas { "poligony " } else { "" },
-                    if self.project.edges.enabled { "+ granica" } else { "" }
-                ));
-                ui.small(format!(
-                    "Ziarno: {} | mnożnik odstępów: {:.2} | polany: {:.0}%",
-                    self.project.seed,
-                    self.project.spacing_multiplier,
-                    self.project.clearing_strength * 100.0
+                {
+                    let src0 = format!(
+                        "{} {}{}{}",
+                        tr(lang, "Aktywne źródła:"),
+                        if self.project.use_mask_zones {
+                            tr(lang, "maska")
+                        } else {
+                            String::new()
+                        },
+                        if self.project.use_areas {
+                            format!(" {}", tr(lang, "poligony"))
+                        } else {
+                            String::new()
+                        },
+                        if self.project.edges.enabled {
+                            format!(" {}", tr(lang, "+ granica"))
+                        } else {
+                            String::new()
+                        }
+                    );
+                    ui.small(src0);
+                }
+                ui.small(tf(
+                    lang,
+                    "Ziarno: {0} | mnożnik odstępów: {1} | polany: {2}",
+                    &[
+                        &self.project.seed.to_string(),
+                        &format!("{:.2}", self.project.spacing_multiplier),
+                        &format!("{:.0}%", self.project.clearing_strength * 100.0),
+                    ],
                 ));
             });
 
@@ -1412,11 +1441,10 @@ impl ForestApp {
         CollapsingHeader::new(tr(lang, "✂ Wycinanie (kolor + bufor)"))
             .default_open(false)
             .show(ui, |ui| {
-                ui.small(
-                    "Usuwa WYGENEROWANE obiekty w buforze wokół pikseli danego koloru \
-                     (działa też na obszary rysowane). Nakłada się ponownie przy każdym \
-                     generowaniu. Bufor zaokrąglany do piksela maski.",
-                );
+                ui.small(tr(
+                    lang,
+                    "Usuwa WYGENEROWANE obiekty w buforze wokół pikseli danego koloru (działa też na obszary rysowane). Nakłada się ponownie przy każdym generowaniu. Bufor zaokrąglany do piksela maski.",
+                ));
                 ui.separator();
                 let d = ForestProject::default();
                 let p = &mut self.project;
@@ -1678,9 +1706,9 @@ impl ForestApp {
                 for (i, sp) in self.project.species.iter_mut().enumerate() {
                     // nagłówek grupy (puste pole grupy -> "Inne")
                     let group_label = if sp.group.is_empty() {
-                        "Inne".to_string()
+                        tr(lang, "Inne")
                     } else {
-                        sp.group.clone()
+                        tr(lang, &sp.group)
                     };
                     if group_label != last_group {
                         ui.separator();
@@ -1847,7 +1875,7 @@ ui.text_edit_singleline(&mut sp.label);
                         }
                     }
                     None => {
-                        ui.small("Brak wyników — kliknij „▶ Generuj”. Po generowaniu tutaj pojawią się warstwy.");
+                        ui.small(tr(lang, "Brak wyników - kliknij '▶ Generuj'. Po generowaniu tutaj pojawią się warstwy."));
                     }
                 }
             });
@@ -1857,7 +1885,7 @@ ui.text_edit_singleline(&mut sp.label);
             .default_open(true)
             .show(ui, |ui| {
                 // --- presety roślinności (pogrupowane) ----------------------
-                ui.small("Dodaj strefę z presetu (⧉ kopiuje do „Moje presety”):");
+                ui.small(tr(lang, "Dodaj strefę z presetu (⊕ kopiuje do \"Moje presety\"):"));
                 let presets = forest_core::species::zone_presets();
                 let mut last_group = "";
                 ScrollArea::vertical()
@@ -1867,22 +1895,23 @@ ui.text_edit_singleline(&mut sp.label);
                         for p in presets.iter() {
                             if p.group != last_group {
                                 ui.separator();
-                                ui.strong(p.group);
+                                ui.strong(tr(lang, p.group));
                                 last_group = p.group;
                             }
                             ui.horizontal(|ui| {
-                                if ui.button("+").on_hover_text(format!(
-                                    "Dodaj strefę '{}' ({:.0} szt/ha)",
-                                    p.name, p.density_per_ha
+                                if ui.button("+").on_hover_text(tf(
+                                    lang,
+                                    "Dodaj strefę '{0}' ({1} szt/ha)",
+                                    &[&tr(lang, p.name), &format!("{:.0}", p.density_per_ha)],
                                 )) .clicked()
                                 {
                                     self.add_zone_from_preset(*p);
                                 }
-                                ui.label(p.name);
+                                ui.label(tr(lang, p.name));
                                 ui.weak(format!("{:.0}/ha", p.density_per_ha));
                                 if ui
                                     .button("⧉")
-                                    .on_hover_text("Kopiuj do „Moje presety” (edytowalna kopia)")
+                                    .on_hover_text(tr(lang, "Kopiuj do „Moje presety” (edytowalna kopia)"))
                                     .clicked()
                                 {
                                     self.user_presets.push(UserPreset::from_builtin(p));
@@ -2003,7 +2032,7 @@ ui.text_edit_singleline(&mut sp.label);
                     // 🧩 miks presetów — kilka szablonów na tej samej strefie
                     ui.indent(format!("zmix{zi}"), |ui| {
                         let changed =
-                            ui_mix_rows(ui, &format!("zone{zi}"), &mut z.preset_mix, &preset_list);
+                            ui_mix_rows(ui, lang, &format!("zone{zi}"), &mut z.preset_mix, &preset_list);
                         if changed {
                             if let Some(snap) = compute_mix_snap(&z.preset_mix, &preset_list) {
                                 let mapped: Vec<(usize, f32)> = snap
@@ -2023,10 +2052,13 @@ ui.text_edit_singleline(&mut sp.label);
                             }
                         }
                         if !z.preset_mix.is_empty() {
-                            ui.small(format!(
-                                "Efekt: {:.0} szt/ha, {} gatunków (ręczna edycja wag niżej czyści miks)",
-                                z.density_per_ha,
-                                z.species_weights.len()
+                            ui.small(tf(
+                                lang,
+                                "Efekt: {0} szt/ha, {1} gatunków (ręczna edycja wag niżej czyści miks)",
+                                &[
+                                    &format!("{:.0}", z.density_per_ha),
+                                    &z.species_weights.len().to_string(),
+                                ],
                             ));
                         }
                     });
@@ -2143,14 +2175,18 @@ ui.text_edit_singleline(&mut sp.label);
                         ui.colored_label(Color32::YELLOW, tr(lang, "• niezapisane"));
                     }
                 });
-                ui.small(format!("Plik: {} (katalog roboczy programu)", DEFAULT_PRESETS_FILE));
+                ui.small(tf(
+                    lang,
+                    "Plik: {0} (katalog roboczy programu)",
+                    &[DEFAULT_PRESETS_FILE],
+                ));
                 ui.separator();
 
                 if self.user_presets.is_empty() {
-                    ui.small(
-                        "Brak własnych presetów. Skopiuj wbudowane przyciskiem ⧉ \
-                         w sekcji 🌲 Strefy lasu albo dodaj pusty powyżej.",
-                    );
+                    ui.small(tr(
+                        lang,
+                        "Brak własnych presetów. Skopiuj wbudowane przyciskiem ⊕ w sekcji \"🌲 Strefy lasu\" albo dodaj pusty powyżej.",
+                    ));
                 }
 
                 let n_species = self.project.species.len();
@@ -2162,7 +2198,7 @@ ui.text_edit_singleline(&mut sp.label);
                 for (i, p) in self.user_presets.iter_mut().enumerate() {
                     if p.group != last_group {
                         ui.separator();
-                        ui.strong(p.group.clone());
+                        ui.strong(tr(lang, &p.group));
                         last_group = p.group.clone();
                     }
                     let editing = self.preset_edit_open == Some(i);
@@ -2184,7 +2220,7 @@ ui.text_edit_singleline(&mut sp.label);
                         ui.text_edit_singleline(&mut p.name);
                         if ui
                             .button(tr(lang, "+ Strefa"))
-                            .on_hover_text("Dodaj strefę z tego presetu")
+                            .on_hover_text(tr(lang, "Dodaj strefę z tego presetu"))
                             .clicked()
                         {
                             pending_add = Some(i);
@@ -2292,8 +2328,9 @@ ui.text_edit_singleline(&mut sp.label);
         CollapsingHeader::new(tr(lang, "📐 Obszary (poligony)"))
             .default_open(false)
             .show(ui, |ui| {
-                ui.small(format!(
-                    "Rysowane na mapie: wybierz preset na pasku → ✏ Rysuj obszar → klikaj wierzchołki (LPM), Enter/dwuklik = zakończ."
+                ui.small(tr(
+                    lang,
+                    "Rysowane na mapie: wybierz preset na pasku → ✏ Rysuj obszar → klikaj wierzchołki (LPM), Enter/dwuklik = zakończ.",
                 ));
                 ui.separator();
                 let mut to_remove: Option<usize> = None;
@@ -2340,17 +2377,21 @@ ui.text_edit_singleline(&mut sp.label);
                             let ha =
                                 forest_core::scatter::polygon_area_m2(&a.polygon) / 10_000.0;
                             let est = (ha * f64::from(a.density_per_ha)).round() as u64;
-                            ui.label(format!(
-                                "{:.1} ha | pkt: {} | ≈ {} szt",
-                                ha,
-                                a.polygon.len(),
-                                est
+                            ui.label(tf(
+                                lang,
+                                "{0} ha | pkt: {1} | ≈ {2} szt",
+                                &[
+                                    &format!("{:.1}", ha),
+                                    &a.polygon.len().to_string(),
+                                    &est.to_string(),
+                                ],
                             ));
                         });
                         // 🧩 miks presetów na tym obszarze
                         ui.indent(format!("amix{ai}"), |ui| {
                             let changed = ui_mix_rows(
                                 ui,
+                                lang,
                                 &format!("area{ai}"),
                                 &mut a.preset_mix,
                                 &preset_list_a,
@@ -2378,10 +2419,13 @@ ui.text_edit_singleline(&mut sp.label);
                                 }
                             }
                             if !a.preset_mix.is_empty() {
-                                ui.small(format!(
-                                    "Efekt: {:.0} szt/ha, {} gatunków",
-                                    a.density_per_ha,
-                                    a.species_weights.len()
+                                ui.small(tf(
+                                    lang,
+                                    "Efekt: {0} szt/ha, {1} gatunków",
+                                    &[
+                                        &format!("{:.0}", a.density_per_ha),
+                                        &a.species_weights.len().to_string(),
+                                    ],
                                 ));
                             }
                         });
@@ -2493,10 +2537,13 @@ ui.text_edit_singleline(&mut sp.label);
                                 });
                             }
                             None => {
-                                ui.small(format!(
-                                    "Używa granicy globalnej (pas {:.0} m, {:.0}/ha)",
-                                    global_edges_snap.band_width_m,
-                                    global_edges_snap.density_per_ha
+                                ui.small(tf(
+                                    lang,
+                                    "Używa granicy globalnej (pas {0} m, {1}/ha)",
+                                    &[
+                                        &format!("{:.0}", global_edges_snap.band_width_m),
+                                        &format!("{:.0}", global_edges_snap.density_per_ha),
+                                    ],
                                 ));
                             }
                         }
