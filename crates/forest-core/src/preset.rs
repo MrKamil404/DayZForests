@@ -386,7 +386,7 @@ mod tests {
     fn sanitize_drops_dead_references() {
         let mut p = ForestProject::default();
         p.zones.push(ZoneDef {
-            species_weights: vec![(0, 1.0), (99, 2.0), (1, 0.0)],
+            species_weights: vec![(0, 1.0), (9999, 2.0), (1, 0.0)],
             ..Default::default()
         });
         p.sanitize();
