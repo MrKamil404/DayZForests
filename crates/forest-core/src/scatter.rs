@@ -1049,6 +1049,20 @@ pub fn generate(
                     (max_y + margin).min(size),
                 );
 
+                // inteligentne generowanie: filtr kolorów podkładu (także dla granicy)
+                let cf_samples: Vec<Rgb8> = area
+                    .color_filter
+                    .as_ref()
+                    .map(|f| f.samples.clone())
+                    .unwrap_or_default();
+                let cf_tol = area
+                    .color_filter
+                    .as_ref()
+                    .map(|f| f.tolerance)
+                    .unwrap_or(0);
+                let use_cf = !cf_samples.is_empty() && satellite.is_some();
+                let sat_ref = satellite;
+
                 for k in 0..EDGE_STRIPS {
                     let wk = strip_weight(k, EDGE_STRIPS, eff.blend);
                     let frac = wk / wsum;
@@ -1072,6 +1086,7 @@ pub fn generate(
                     let s_hi = band_a * ((k + 1) as f64) / EDGE_STRIPS as f64;
                     let ring_c = ring.clone();
                     let wob_a = wob_a.clone();
+                    let cf_samples = cf_samples.clone();
                     jobs.push(Job {
                         label: format!(
                             "Granica – {} ({}/{})",
@@ -1090,6 +1105,30 @@ pub fn generate(
                                 let y = rng.gen_range(min_y..max_y);
                                 let s = point_ring_distance(x, y, &ring_c) + wob_a(x, y);
                                 if s >= s_lo && s < s_hi {
+                                    // inteligentne generowanie: piksel podkładu musi
+                                    // pasować do jednej z próbek
+                                    if use_cf {
+                                        let sat = sat_ref.unwrap();
+                                        let fx = (x / size) * f64::from(sat.width);
+                                        let fy = ((size - y) / size) * f64::from(sat.height);
+                                        let px_i = (fx.floor().max(0.0) as u32).min(sat.width - 1);
+                                        let py_i = (fy.floor().max(0.0) as u32).min(sat.height - 1);
+                                        let pc = sat.pixel(px_i, py_i);
+                                        let ok = cf_samples.iter().any(|sm| {
+                                            (i32::from(pc.0[0]) - i32::from(sm.0[0])).unsigned_abs()
+                                                as u32
+                                                + (i32::from(pc.0[1]) - i32::from(sm.0[1]))
+                                                    .unsigned_abs()
+                                                    as u32
+                                                + (i32::from(pc.0[2]) - i32::from(sm.0[2]))
+                                                    .unsigned_abs()
+                                                    as u32
+                                                <= cf_tol
+                                        });
+                                        if !ok {
+                                            continue;
+                                        }
+                                    }
                                     return Some((x, y));
                                 }
                             }
