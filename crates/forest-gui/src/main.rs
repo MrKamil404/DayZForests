@@ -864,6 +864,11 @@ impl ForestApp {
                 self.zoom = 1.0;
                 self.pan = Vec2::ZERO;
             }
+            Action::UndoPoint => {
+                if !self.draw_points.is_empty() {
+                    self.draw_points.pop();
+                }
+            }
         }
     }
 
@@ -1021,6 +1026,7 @@ pub enum Action {
     DrawArea,
     SelectAreas,
     FitView,
+    UndoPoint,
 }
 
 impl Action {
@@ -1035,6 +1041,7 @@ impl Action {
             Action::DrawArea => "draw_area",
             Action::SelectAreas => "select_areas",
             Action::FitView => "fit_view",
+            Action::UndoPoint => "undo_point",
         }
     }
     pub fn from_name(s: &str) -> Option<Action> {
@@ -1047,20 +1054,22 @@ impl Action {
             "draw_area" => Action::DrawArea,
             "select_areas" => Action::SelectAreas,
             "fit_view" => Action::FitView,
+            "undo_point" => Action::UndoPoint,
             _ => return None,
         })
     }
     /// Etykieta PL (słownik może przetłumaczyć).
     pub fn label(self) -> &'static str {
         match self {
-            Action::Generate => "▶ Generuj",
-            Action::ExportTxt => "💾 Eksport TXT (TB)",
-            Action::ExportPng => "🖼 Eksport PNG (drzewa)",
-            Action::OpenProject => "📂 Wczytaj projekt",
-            Action::SaveProject => "💾 Zapisz projekt",
-            Action::DrawArea => "✏ Rysuj obszar",
-            Action::SelectAreas => "🎯 Zaznacz obszary",
+            Action::Generate => "Generuj",
+            Action::ExportTxt => "Eksport TXT",
+            Action::ExportPng => "Eksport PNG",
+            Action::OpenProject => "Wczytaj projekt",
+            Action::SaveProject => "Zapisz projekt",
+            Action::DrawArea => "Rysuj",
+            Action::SelectAreas => "Zaznacz",
             Action::FitView => "Dopasuj widok",
+            Action::UndoPoint => "Cofnij punkt",
         }
     }
 }
@@ -1158,6 +1167,7 @@ fn default_bindings() -> std::collections::HashMap<Action, Option<KeyBind>> {
         (Action::DrawArea, Some(K::D)),
         (Action::SelectAreas, Some(K::X)),
         (Action::FitView, Some(K::F)),
+        (Action::UndoPoint, Some(K::Z)),
     ]
     .into_iter()
     .map(|(a, k)| {
@@ -1165,7 +1175,7 @@ fn default_bindings() -> std::collections::HashMap<Action, Option<KeyBind>> {
             a,
             k.map(|key| KeyBind {
                 key,
-                ctrl: matches!(a, Action::OpenProject | Action::SaveProject),
+                ctrl: matches!(a, Action::OpenProject | Action::SaveProject | Action::UndoPoint),
                 shift: false,
                 alt: false,
             }),
@@ -2049,6 +2059,31 @@ impl eframe::App for ForestApp {
                     ui.label(tr(lang, "Gotowy."));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button("⌨")
+                        .on_hover_text(tr(
+                            lang,
+                            "Pomoc: skróty klawiszowe (podgląd i edycja przypisań)"
+                        ))
+                        .clicked()
+                    {
+                        self.show_shortcuts_help = true;
+                    }
+                    egui::ComboBox::from_id_source("lang_sel")
+                        .selected_text(lang.name())
+                        .show_ui(ui, |ui| {
+                            for l in Lang::ALL {
+                                let selected = l == lang;
+                                if ui
+                                    .selectable_label(selected, l.name())
+                                    .clicked()
+                                    && !selected
+                                {
+                                    self.lang = l;
+                                    self.save_prefs();
+                                }
+                            }
+                        });
                     if let Some(e) = &self.error {
                         ui.colored_label(Color32::RED, format!("⚠ {e}"));
                     } else if let Some(i) = &self.info {
@@ -2073,7 +2108,9 @@ impl eframe::App for ForestApp {
             .default_width(370.0)
             .show(ctx, |ui| {
                 self.ui_presets_layers(ui);
-            });                self.ui_toolbar(ctx);
+            });
+        self.ui_toolbar(ctx);
+        self.ui_drawing_bar(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_canvas(ui);
         });
@@ -2149,27 +2186,9 @@ impl ForestApp {
     fn ui_toolbar(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
 
-        // Toolbar — natywny titlebar Windows obsługuje przyciski okna
-        // i przeciąganie, więc zostaje tylko pasek narzędzi.
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                egui::ComboBox::from_id_source("lang_sel")
-                    .selected_text(format!("🌐 {}", lang.name()))
-                    .show_ui(ui, |ui| {
-                        for l in Lang::ALL {
-                            let selected = l == lang;
-                            if ui
-                                .selectable_label(selected, format!("🌐 {}", l.name()))
-                                .clicked()
-                                && !selected
-                            {
-                                self.lang = l;
-                                self.save_prefs();
-                            }
-                        }
-                    });
-                ui.separator();
-                ui.add_enabled(!self.busy, egui::Button::new(tr(lang, "▶ Generuj")))
+                ui.add_enabled(!self.busy, egui::Button::new(tr(lang, "Generuj")))
                     .on_hover_text(format!(
                         "{}{}",
                         tr(lang, "Generuj obiekty na mapie"),
@@ -2179,28 +2198,28 @@ impl ForestApp {
                     .then(|| self.start_generation(ui.ctx()));
                 ui.add_enabled(
                     !self.objects.is_empty(),
-                    egui::Button::new(tr(lang, "💾 Eksport TXT (TB)")),
+                    egui::Button::new(tr(lang, "Eksport TXT")),
                 )
                 .on_hover_text(self.bind_hint(Action::ExportTxt))
                 .clicked()
                 .then(|| self.export_txt());
                 ui.add_enabled(
                     !self.objects.is_empty(),
-                    egui::Button::new(tr(lang, "🖼 Eksport PNG (drzewa)")),
+                    egui::Button::new(tr(lang, "Eksport PNG")),
                 )
                 .on_hover_text(self.bind_hint(Action::ExportPng))
                 .clicked()
                 .then(|| self.export_trees_png());
                 ui.separator();
                 if ui
-                    .button(tr(lang, "📂 Wczytaj projekt"))
+                    .button(tr(lang, "Wczytaj"))
                     .on_hover_text(self.bind_hint(Action::OpenProject))
                     .clicked()
                 {
                     self.load_project(ui.ctx());
                 }
                 if ui
-                    .button(tr(lang, "💾 Zapisz projekt"))
+                    .button(tr(lang, "Zapisz"))
                     .on_hover_text(self.bind_hint(Action::SaveProject))
                     .clicked()
                 {
@@ -2209,9 +2228,9 @@ impl ForestApp {
                 ui.separator();
                 if ui
                     .add(egui::Button::new(if self.draw_mode {
-                        tr(lang, "✏ Rysowanie: WŁ")
+                        tr(lang, "Rysowanie: WŁ")
                     } else {
-                        tr(lang, "✏ Rysuj obszar")
+                        tr(lang, "Rysuj")
                     }))
                     .on_hover_text(format!(
                         "{}{}",
@@ -2227,9 +2246,9 @@ impl ForestApp {
                 }
                 if ui
                     .add(egui::Button::new(if self.select_mode {
-                        tr(lang, "🎯 Zaznaczanie: WŁ")
+                        tr(lang, "Zaznaczanie: WŁ")
                     } else {
-                        tr(lang, "🎯 Zaznacz obszary")
+                        tr(lang, "Zaznacz")
                     }))
                     .on_hover_text(format!(
                         "{}{}",
@@ -2243,29 +2262,6 @@ impl ForestApp {
                 {
                     self.toggle_select_mode();
                 }
-                if self.select_mode && !self.selected_areas.is_empty() && ui
-                    .button("✖")
-                    .on_hover_text(tr(lang, "Wyczyść zaznaczenie"))
-                    .clicked()
-                {
-                    self.selected_areas.clear();
-                    self.show_only_selected = false;
-                }
-                if !self.draw_points.is_empty() {
-                    ui.colored_label(
-                        Color32::YELLOW,
-                        format!("{} {}", tr(self.lang, "pkt:"), self.draw_points.len()),
-                    );
-                    if ui.button("✔ Zakończ").clicked() {
-                        self.finish_area();
-                    }
-                    if ui.button("⟲ Cofnij pkt").clicked() {
-                        self.draw_points.pop();
-                    }
-                    if ui.button("✖ Anuluj").clicked() {
-                        self.cancel_drawing();
-                    }
-                }
                 ui.separator();
                 ui.checkbox(&mut self.show_sat, tr(lang, "Podkład"));
                 ui.checkbox(&mut self.show_mask, tr(lang, "Maska"));
@@ -2278,25 +2274,51 @@ impl ForestApp {
                     self.zoom = 1.0;
                     self.pan = Vec2::ZERO;
                 }
-                if ui
-                    .button("⌨")
-                    .on_hover_text(tr(
-                        lang,
-                        "Pomoc: skróty klawiszowe (podgląd i edycja przypisań)"
-                    ))
-                    .clicked()
-                {
-                    self.show_shortcuts_help = true;
-                }
             });
         });
+    }
+
+    fn ui_drawing_bar(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let show_drawing = !self.draw_points.is_empty();
+        let show_select = self.select_mode && !self.selected_areas.is_empty();
+
+        if show_drawing || show_select {
+            egui::TopBottomPanel::top("drawing_bar").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if show_drawing {
+                        ui.colored_label(
+                            Color32::YELLOW,
+                            format!("{} {}", tr(self.lang, "pkt:"), self.draw_points.len()),
+                        );
+                        if ui.button(tr(lang, "Zakończ")).clicked() {
+                            self.finish_area();
+                        }
+                        if ui.button(tr(lang, "Cofnij pkt")).clicked() {
+                            self.draw_points.pop();
+                        }
+                        if ui.button(tr(lang, "Anuluj")).clicked() {
+                            self.cancel_drawing();
+                        }
+                    }
+                    if show_select {
+                        if ui
+                            .button(tr(lang, "Wyczyść zaznaczenie"))
+                            .clicked()
+                        {
+                            self.selected_areas.clear();
+                            self.show_only_selected = false;
+                        }
+                    }
+                });
+            });
+        }
     }
 
     fn ui_params(&mut self, ui: &mut egui::Ui) {
         let lang = self.lang;
 
-        // Pliki
-        CollapsingHeader::new(tr(lang, "📁 Pliki"))
+        CollapsingHeader::new(tr(lang, "Pliki"))
             .default_open(true)
             .show(ui, |ui| {
                 if ui.button(tr(lang, "Wczytaj maskę (PNG/BMP/TGA)...")).clicked() {
@@ -2372,8 +2394,7 @@ impl ForestApp {
                 }
             });
 
-        // Mapa
-        CollapsingHeader::new(tr(lang, "🗺 Mapa / eksport"))
+        CollapsingHeader::new(tr(lang, "Parametry"))
             .default_open(true)
             .show(ui, |ui| {
                 let d = ForestProject::default();
@@ -2427,13 +2448,7 @@ impl ForestApp {
                         p.elevation_mode = d.elevation_mode;
                     }
                 });
-            });
-
-        // Źródła generowania
-        CollapsingHeader::new(tr(lang, "⚙ Źródła generowania"))
-            .default_open(true)
-            .show(ui, |ui| {
-                let d = ForestProject::default();
+                ui.separator();
                 setting_bool(
                     ui,
                     tr(lang, "Strefy z maski (kolory)"),
@@ -2451,11 +2466,10 @@ impl ForestApp {
                 setting_bool(
                     ui,
                     tr(lang, "Granica lasu (krzewy)"),
-                    "Pas krzewów/podrostu wzdłuż krawędzi lasu (parametry w sekcji 🧱)",
+                    "Pas krzewów/podrostu wzdłuż krawędzi lasu",
                     &mut self.project.edges.enabled,
                     false,
                 );
-                ui.separator();
                 {
                     let src0 = format!(
                         "{} {}{}{}",
@@ -2490,8 +2504,7 @@ impl ForestApp {
             });
 
 
-        // Granica lasu (krzewy/podrost)
-        CollapsingHeader::new(tr(lang, "🧱 Granica lasu"))
+        CollapsingHeader::new(tr(lang, "Granica lasu"))
             .default_open(false)
             .show(ui, |ui| {
                 let d_edges = EdgeSettings::default();
@@ -2499,115 +2512,7 @@ impl ForestApp {
                 ui_edge_settings(ui, self.lang, "G", &mut self.project.edges, &d_edges, &species_snap);
             });
 
-        // Wycinanie po kolorach maski (+ bufor) — usuwa wygenerowane obiekty
-        CollapsingHeader::new(tr(lang, "✂ Wycinanie (kolor + bufor)"))
-            .default_open(false)
-            .show(ui, |ui| {
-                ui.small(tr(
-                    lang,
-                    "Usuwa WYGENEROWANE obiekty w buforze wokół pikseli danego koloru (działa też na obszary rysowane). Nakłada się ponownie przy każdym generowaniu. Bufor zaokrąglany do piksela maski.",
-                ));
-                ui.separator();
-                let d = ForestProject::default();
-                let p = &mut self.project;
-                if p.cut_zones.is_empty() {
-                    ui.small(tr(lang, "Brak stref wycinania."));
-                }
-                let mut to_remove: Option<usize> = None;
-                for (ci, cz) in p.cut_zones.iter_mut().enumerate() {
-                    let [r, g, b] = cz.color.0;
-                    ui.horizontal(|ui| {
-                        let (_rect, resp) =
-                            ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                        ui.painter_at(resp.rect)
-                            .rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
-                        ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
-                        ui.label(tr(lang, "Bufor [m]:"));
-                        ui.add(
-                            egui::DragValue::new(&mut cz.margin_m)
-                                .speed(1.0)
-                                .clamp_range(0.0..=500.0),
-                        );
-                        if ui.button("✖").clicked() {
-                            to_remove = Some(ci);
-                        }
-                    });
-                }
-                if let Some(i) = to_remove {
-                    p.cut_zones.remove(i);
-                }
-
-                // dodawanie z kolorów maski — histogram z cache (liczony raz przy wczytaniu)
-                if self.mask.is_some() {
-                    ui.small(tr(lang, "Dodaj strefę z koloru maski:"));
-                    match &self.histogram {
-                        None => {
-                            ui.small(tr(lang, "Analizuję kolory maski..."));
-                            ui.ctx()
-                                .request_repaint_after(std::time::Duration::from_millis(150));
-                        }
-                        Some(hist) => {
-                            let used: Vec<Rgb8> =
-                                p.cut_zones.iter().map(|c| c.color).collect();
-                            let cands: Vec<(Rgb8, usize)> = hist
-                                .iter()
-                                .filter(|(c, _)| !used.contains(c))
-                                .take(12)
-                                .cloned()
-                                .collect();
-                            if cands.is_empty() {
-                                ui.small("(brak nowych kolorów)");
-                            } else {
-                                ScrollArea::vertical()
-                                    .max_height(160.0)
-                                    .id_source("cut_colors")
-                                    .show(ui, |ui| {
-                                        for (c, n) in &cands {
-                                            let cc = *c;
-                                            let [r, g, b] = cc.0;
-                                            ui.horizontal(|ui| {
-                                                let (_rect, resp) = ui.allocate_exact_size(
-                                                    Vec2::splat(18.0),
-                                                    Sense::click(),
-                                                );
-                                                ui.painter_at(resp.rect).rect_filled(
-                                                    resp.rect,
-                                                    2.0,
-                                                    Color32::from_rgb(r, g, b),
-                                                );
-                                                ui.monospace(format!(
-                                                    "#{r:02X}{g:02X}{b:02X}"
-                                                ));
-                                                ui.weak(format!("{n}"));
-                                                if ui
-                                                    .button(tr(lang, "+ Wyklucz"))
-                                                    .on_hover_text(
-                                                        "Dodaj strefę wycinania",
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    p.cut_zones
-                                                        .push(forest_core::preset::CutZone {
-                                                            color: cc,
-                                                            margin_m: 10.0,
-                                                        });
-                                                }
-                                            });
-                                        }
-                                    });
-                            }
-                        }
-                    }
-                } else {
-                    ui.small(tr(lang, "(wczytaj maskę, aby wybierać kolory)"));
-                }
-                if p.cut_zones.len() != d.cut_zones.len() {
-                    ui.small("Strefy działają po kliknięciu „▶ Generuj”.");
-                }
-            });
-
-        // Filtry
-        CollapsingHeader::new(tr(lang, "⛰ Filtry środowiskowe"))
+        CollapsingHeader::new(tr(lang, "Filtry i rozrzut"))
             .default_open(false)
             .show(ui, |ui| {
                 let d = ForestProject::default();
@@ -2625,14 +2530,7 @@ impl ForestApp {
                     1.0,
                     0.0..=1000.0,
                 );
-            });
-
-        // Rozrzut
-        CollapsingHeader::new(tr(lang, "🎲 Rozrzut / polany"))
-            .default_open(false)
-            .show(ui, |ui| {
-                let d = ForestProject::default();
-                let p = &mut self.project;
+                ui.separator();
                 horiz_tip(ui, ">1 = rzadszy las", |ui| {
                     let m = (p.spacing_multiplier - d.spacing_multiplier).abs() > 1e-9;
                     lbl_mod(ui, tr(lang, "Mnożnik odstępów:"), m);
@@ -2659,13 +2557,12 @@ impl ForestApp {
                 });
             });
 
-        // Gatunki
-        CollapsingHeader::new(tr(lang, "🌳 Gatunki"))
+        CollapsingHeader::new(tr(lang, "Gatunki"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if ui
-                        .button("🔍 Sprawdź modele na P:\\")
+                        .button(tr(lang, "Sprawdź modele na P:\\"))
                         .on_hover_text("Porównaj modele z plikami gry (P:\\DZ\\plants). \
                                         Terrain Builder odrzuci import, gdy jakiegokolwiek \
                                         brakuje w Template Library.")
@@ -2677,7 +2574,7 @@ impl ForestApp {
                                     forest_core::species::missing_in_game(&self.project.species, &available);
                                 if missing.is_empty() {
                                     self.info = Some(
-                                        "✓ Wszystkie modele istnieją w grze (P:\\DZ\\plants).".into(),
+                                        "Wszystkie modele istnieją w grze (P:\\DZ\\plants).".into(),
                                     );
                                     self.error = None;
                                 } else {
@@ -2694,17 +2591,15 @@ impl ForestApp {
                     ui.small(tr(lang, "TB wymaga wpisu w Template Library dla każdego modelu."));
                 });
                 ui.horizontal(|ui| {
-                    if ui.button(tr(lang, "📥 Import gatunków...")).clicked() {
+                    if ui.button(tr(lang, "Import gatunków...")).clicked() {
                         self.import_species();
                     }
-                    if ui.button(tr(lang, "📤 Eksport gatunków...")).clicked() {
+                    if ui.button(tr(lang, "Eksport gatunków...")).clicked() {
                         self.export_species();
                     }
                 });
                 ui.separator();
-                // szukajka gatunków
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.species_search)
                             .desired_width(170.0)
@@ -2882,53 +2777,14 @@ ui.text_edit_singleline(&mut sp.label);
         let lang = self.lang;
 
         ScrollArea::vertical().show(ui, |ui| {
-        // 📊 Wynik generowania
-        CollapsingHeader::new(tr(lang, "📊 Wygenerowane warstwy"))
-            .default_open(true)
-            .show(ui, |ui| {
-                match &self.stats {
-                    Some(s) => {
-                        ui.label(format!(
-                            "Razem: {} obiektów | granica: {} | wycięto: {} | {} ms",
-                            s.total, s.edge_count, s.removed_cut, s.elapsed_ms
-                        ));
-                        ui.separator();
-                        if s.per_source.is_empty() {
-                            ui.small(tr(lang, "(brak źródeł)"));
-                        }
-                        for (n, cnt) in &s.per_source {
-                            ui.horizontal(|ui| {
-                                ui.label(n.as_str());
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.monospace(format!("{cnt}"));
-                                });
-                            });
-                        }
-                        let rej = s.rejected_spacing + s.rejected_filters + s.rejected_exclusion + s.rejected_clearing;
-                        if rej > 0 {
-                            ui.separator();
-                            ui.small(format!(
-                                "Odrzucone: {rej} (odstęp {}, filtry {}, wykluczenia {}, polany {})",
-                                s.rejected_spacing, s.rejected_filters,
-                                s.rejected_exclusion, s.rejected_clearing
-                            ));
-                        }
-                    }
-                    None => {
-                        ui.small(tr(lang, "Brak wyników - kliknij '▶ Generuj'. Po generowaniu tutaj pojawią się warstwy."));
-                    }
-                }
-            });
-
-        // Strefy
-        CollapsingHeader::new(tr(lang, "🌲 Strefy lasu"))
+        CollapsingHeader::new(tr(lang, "Strefy lasu"))
             .default_open(true)
             .show(ui, |ui| {
                 // --- presety roślinności (pogrupowane) ----------------------
-                ui.small(tr(lang, "Dodaj strefę z presetu (⊕ kopiuje do \"Moje presety\"):"));
+                ui.small(tr(lang, "Dodaj strefę z presetu (+ kopiuje do \"Moje presety\"):"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.zone_preset_search)
-                        .hint_text(tr(lang, "🔍 Szukaj presetu..."))
+                        .hint_text(tr(lang, "Szukaj presetu..."))
                         .desired_width(200.0),
                 );
                 let q_zp = self.zone_preset_search.trim().to_lowercase();
@@ -2963,7 +2819,7 @@ ui.text_edit_singleline(&mut sp.label);
                                 ui.weak(format!("{:.0}/ha", p.density_per_ha));
                                 if ui
                                     .button("⧉")
-                                    .on_hover_text(tr(lang, "Kopiuj do „Moje presety” (edytowalna kopia)"))
+                                    .on_hover_text(tr(lang, "Kopiuj do Moje presety (edytowalna kopia)"))
                                     .clicked()
                                 {
                                     self.user_presets.push(UserPreset::from_builtin(p));
@@ -2973,10 +2829,10 @@ ui.text_edit_singleline(&mut sp.label);
                         }
                     });
                 ui.horizontal(|ui| {
-                    if ui.button(tr(lang, "📥 Import stref...")).clicked() {
+                    if ui.button(tr(lang, "Import stref...")).clicked() {
                         self.import_zones();
                     }
-                    if ui.button(tr(lang, "📤 Eksport stref...")).clicked() {
+                    if ui.button(tr(lang, "Eksport stref...")).clicked() {
                         self.export_zones();
                     }
                 });
@@ -3210,9 +3066,112 @@ ui.text_edit_singleline(&mut sp.label);
                 }
             });
 
+        CollapsingHeader::new(tr(lang, "Wycinanie"))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.small(tr(
+                    lang,
+                    "Usuwa WYGENEROWANE obiekty w buforze wokół pikseli danego koloru (działa też na obszary rysowane). Nakłada się ponownie przy każdym generowaniu. Bufor zaokrąglany do piksela maski.",
+                ));
+                ui.separator();
+                let d = ForestProject::default();
+                let p = &mut self.project;
+                if p.cut_zones.is_empty() {
+                    ui.small(tr(lang, "Brak stref wycinania."));
+                }
+                let mut to_remove: Option<usize> = None;
+                for (ci, cz) in p.cut_zones.iter_mut().enumerate() {
+                    let [r, g, b] = cz.color.0;
+                    ui.horizontal(|ui| {
+                        let (_rect, resp) =
+                            ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                        ui.painter_at(resp.rect)
+                            .rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
+                        ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+                        ui.label(tr(lang, "Bufor [m]:"));
+                        ui.add(
+                            egui::DragValue::new(&mut cz.margin_m)
+                                .speed(1.0)
+                                .clamp_range(0.0..=500.0),
+                        );
+                        if ui.button("✖").clicked() {
+                            to_remove = Some(ci);
+                        }
+                    });
+                }
+                if let Some(i) = to_remove {
+                    p.cut_zones.remove(i);
+                }
 
-        // Moje presety — edytowalne szablony stref (zapisywane do JSON)
-        CollapsingHeader::new(tr(lang, "📚 Moje presety"))
+                if self.mask.is_some() {
+                    ui.small(tr(lang, "Dodaj strefę z koloru maski:"));
+                    match &self.histogram {
+                        None => {
+                            ui.small(tr(lang, "Analizuję kolory maski..."));
+                            ui.ctx()
+                                .request_repaint_after(std::time::Duration::from_millis(150));
+                        }
+                        Some(hist) => {
+                            let used: Vec<Rgb8> =
+                                p.cut_zones.iter().map(|c| c.color).collect();
+                            let cands: Vec<(Rgb8, usize)> = hist
+                                .iter()
+                                .filter(|(c, _)| !used.contains(c))
+                                .take(12)
+                                .cloned()
+                                .collect();
+                            if cands.is_empty() {
+                                ui.small("(brak nowych kolorów)");
+                            } else {
+                                ScrollArea::vertical()
+                                    .max_height(160.0)
+                                    .id_source("cut_colors")
+                                    .show(ui, |ui| {
+                                        for (c, n) in &cands {
+                                            let cc = *c;
+                                            let [r, g, b] = cc.0;
+                                            ui.horizontal(|ui| {
+                                                let (_rect, resp) = ui.allocate_exact_size(
+                                                    Vec2::splat(18.0),
+                                                    Sense::click(),
+                                                );
+                                                ui.painter_at(resp.rect).rect_filled(
+                                                    resp.rect,
+                                                    2.0,
+                                                    Color32::from_rgb(r, g, b),
+                                                );
+                                                ui.monospace(format!(
+                                                    "#{r:02X}{g:02X}{b:02X}"
+                                                ));
+                                                ui.weak(format!("{n}"));
+                                                if ui
+                                                    .button(tr(lang, "+ Wyklucz"))
+                                                    .on_hover_text(
+                                                        "Dodaj strefę wycinania",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    p.cut_zones
+                                                        .push(forest_core::preset::CutZone {
+                                                            color: cc,
+                                                            margin_m: 10.0,
+                                                        });
+                                                }
+                                            });
+                                        }
+                                    });
+                            }
+                        }
+                    }
+                } else {
+                    ui.small(tr(lang, "(wczytaj maskę, aby wybierać kolory)"));
+                }
+                if p.cut_zones.len() != d.cut_zones.len() {
+                    ui.small("Strefy działają po kliknięciu Generuj.");
+                }
+            });
+
+        CollapsingHeader::new(tr(lang, "Moje presety"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -3228,7 +3187,7 @@ ui.text_edit_singleline(&mut sp.label);
                         self.preset_edit_open = Some(self.user_presets.len() - 1);
                         self.presets_dirty = true;
                     }
-                    if ui.button(tr(lang, "💾 Zapisz")).clicked() {
+                    if ui.button(tr(lang, "Zapisz")).clicked() {
                         self.save_user_presets();
                     }
                     if self.presets_dirty {
@@ -3241,10 +3200,10 @@ ui.text_edit_singleline(&mut sp.label);
                     &[DEFAULT_PRESETS_FILE],
                 ));
                 ui.horizontal(|ui| {
-                    if ui.button(tr(lang, "📥 Import presetów...")).clicked() {
+                    if ui.button(tr(lang, "Import presetów...")).clicked() {
                         self.import_presets_dialog();
                     }
-                    if ui.button(tr(lang, "📤 Eksport presetów...")).clicked() {
+                    if ui.button(tr(lang, "Eksport presetów...")).clicked() {
                         self.export_presets_dialog();
                     }
                 });
@@ -3253,7 +3212,7 @@ ui.text_edit_singleline(&mut sp.label);
                 if self.user_presets.is_empty() {
                     ui.small(tr(
                         lang,
-                        "Brak własnych presetów. Skopiuj wbudowane przyciskiem ⊕ w sekcji \"🌲 Strefy lasu\" albo dodaj pusty powyżej.",
+                        "Brak własnych presetów. Skopiuj wbudowane przyciskiem + w sekcji \"Strefy lasu\" albo dodaj pusty powyżej.",
                     ));
                 }
 
@@ -3393,16 +3352,16 @@ ui.text_edit_singleline(&mut sp.label);
 
 
         // Obszary rysowane (poligony) — alternatywa dla maski
-        CollapsingHeader::new(tr(lang, "📐 Obszary (poligony)"))
+        CollapsingHeader::new(tr(lang, "Obszary"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.small(tr(
                     lang,
-                    "Rysowane na mapie: wybierz preset na pasku → ✏ Rysuj obszar → klikaj wierzchołki (LPM), Enter/dwuklik = zakończ.",
+                    "Rysowane na mapie: wybierz preset na pasku → Rysuj → klikaj wierzchołki (LPM), Enter/dwuklik = zakończ.",
                 ));
                 ui.horizontal(|ui| {
                     if ui
-                        .button(tr(lang, "📥 SHP"))
+                        .button(tr(lang, "SHP"))
                         .on_hover_text(tr(
                             lang,
                             "Wczytaj poligony z Shapefile (.shp) — tylko geometria; atrybuty .dbf są ignorowane",
@@ -3417,7 +3376,7 @@ ui.text_edit_singleline(&mut sp.label);
                         }
                     }
                     if ui
-                        .button(tr(lang, "📥 GeoJSON"))
+                        .button(tr(lang, "GeoJSON"))
                         .on_hover_text(tr(
                             lang,
                             "Wczytaj poligony z pliku .geojson (etykieta/gęstość z properties, jeśli są)",
@@ -3432,7 +3391,7 @@ ui.text_edit_singleline(&mut sp.label);
                         }
                     }
                     if ui
-                        .button(tr(lang, "📤 GeoJSON"))
+                        .button(tr(lang, "Eksport GeoJSON"))
                         .on_hover_text(tr(
                             lang,
                             "Zapisz poligony (z dziurami) jako .geojson w układzie mapy (offset TB dodany ponownie)",
@@ -3443,9 +3402,7 @@ ui.text_edit_singleline(&mut sp.label);
                     }
                 });
                 ui.separator();
-                // szukajka + filtr zaznaczonych
                 ui.horizontal(|ui| {
-                    ui.label("🔍");
                     ui.add(
                         egui::TextEdit::singleline(&mut self.area_search)
                             .desired_width(150.0)
