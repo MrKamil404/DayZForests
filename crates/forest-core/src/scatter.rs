@@ -744,11 +744,8 @@ pub fn generate(
     let mut edge_bands: Vec<(usize, Vec<(u32, u8)>)> = Vec::new();
 
     // mapa głębokości od krawędzi (wtapianie pasa w głąb stref z maski)
-    let blend_inside = if project.edges.enabled {
-        project.edges.blend_inside_m.max(0.0)
-    } else {
-        0.0
-    };
+    // blend_inside_m działa niezależnie od edges.enabled
+    let blend_inside = project.edges.blend_inside_m.max(0.0);
     let blend_depth: Option<HashMap<u32, u8>> = if blend_inside > 0.0 {
         mask.map(|m| {
             let max_px = ((blend_inside / ps).ceil() as usize).clamp(1, 255);
@@ -832,11 +829,8 @@ pub fn generate(
             let jag_a = eff_edges.jagged_m.max(0.0);
             let wl_a = (eff_edges.band_width_m * 3.0).max(80.0);
             let wob_a = make_wob(jag_a, wl_a, jag_seed);
-            let blend_in_a = if eff_edges.enabled {
-                eff_edges.blend_inside_m.max(0.0)
-            } else {
-                0.0
-            };
+            // blend_inside_m działa niezależnie od edges.enabled
+            let blend_in_a = eff_edges.blend_inside_m.max(0.0);
 
             // inteligentne generowanie: filtr kolorów podkładu
             let cf_samples: Vec<Rgb8> = area

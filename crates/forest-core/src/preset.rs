@@ -303,6 +303,9 @@ impl ForestProject {
                 .map_err(|e| format!("Strefa '{}': {e}", z.label))?;
         }
         for (ai, a) in self.areas.iter().enumerate() {
+            if !a.enabled {
+                continue;
+            }
             if a.polygon.len() < 3 {
                 return Err(format!("Obszar {}: poligon wymaga >= 3 punktów", ai + 1));
             }
