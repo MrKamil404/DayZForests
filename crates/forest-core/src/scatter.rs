@@ -220,7 +220,19 @@ fn on_segment(ax: f64, ay: f64, bx: f64, by: f64, px: f64, py: f64) -> bool {
         && py.max(by) <= ay.max(by) + 1e-9
 }
 
-fn segments_intersect(a1: &[f64; 2], a2: &[f64; 2], b1: &[f64; 2], b2: &[f64; 2]) -> bool {
+/// Zbieżność punktów z tolerancją na zaokrąglenia importu.
+fn same_pt(p: &[f64; 2], q: &[f64; 2]) -> bool {
+    (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9
+}
+
+/// Zwraca punkt przecięcia/styku odcinków albo None, gdy się nie dotykają.
+#[allow(clippy::many_single_char_names)]
+fn segments_intersection_point(
+    a1: &[f64; 2],
+    a2: &[f64; 2],
+    b1: &[f64; 2],
+    b2: &[f64; 2],
+) -> Option<[f64; 2]> {
     let d1 = cross(b1[0], b1[1], b2[0], b2[1], a1[0], a1[1]);
     let d2 = cross(b1[0], b1[1], b2[0], b2[1], a2[0], a2[1]);
     let d3 = cross(a1[0], a1[1], a2[0], a2[1], b1[0], b1[1]);
@@ -228,50 +240,86 @@ fn segments_intersect(a1: &[f64; 2], a2: &[f64; 2], b1: &[f64; 2], b2: &[f64; 2]
     if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
         && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
     {
-        return true; // klasyczne przecięcie
+        // klasyczne przecięcie: przecięcie prostych
+        let (rx, ry) = (a2[0] - a1[0], a2[1] - a1[1]);
+        let (sx, sy) = (b2[0] - b1[0], b2[1] - b1[1]);
+        let denom = rx * sy - ry * sx;
+        if denom.abs() > f64::EPSILON {
+            let t = ((b1[0] - a1[0]) * sy - (b1[1] - a1[1]) * sx) / denom;
+            return Some([a1[0] + t * rx, a1[1] + t * ry]);
+        }
+        return Some([(a1[0] + a2[0]) * 0.5, (a1[1] + a2[1]) * 0.5]);
     }
     // styk (collinear / wspólny punkt) też traktujemy jako przecięcie
     if d1.abs() < 1e-12 && on_segment(b1[0], b1[1], b2[0], b2[1], a1[0], a1[1]) {
-        return true;
+        return Some([a1[0], a1[1]]);
     }
     if d2.abs() < 1e-12 && on_segment(b1[0], b1[1], b2[0], b2[1], a2[0], a2[1]) {
-        return true;
+        return Some([a2[0], a2[1]]);
     }
     if d3.abs() < 1e-12 && on_segment(a1[0], a1[1], a2[0], a2[1], b1[0], b1[1]) {
-        return true;
+        return Some([b1[0], b1[1]]);
     }
     if d4.abs() < 1e-12 && on_segment(a1[0], a1[1], a2[0], a2[1], b2[0], b2[1]) {
-        return true;
+        return Some([b2[0], b2[1]]);
     }
-    false
+    None
+}
+
+/// Lokalizacja samoprzecięcia obrysu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SelfIntersection {
+    /// Odcinek A rozpoczyna się w wierzchołku `seg_a` (kończy w seg_a+1).
+    pub seg_a: usize,
+    /// Odcinek B rozpoczyna się w wierzchołku `seg_b` (kończy w seg_b+1).
+    pub seg_b: usize,
+    /// Punkt przecięcia [x, y] w metrach mapy.
+    pub point: [f64; 2],
+}
+
+/// Szuka PIERWSZEGO samoprzecięcia obrysu i podaje jego lokalizację
+/// (indeksy odcinków + współrzędne punktu). O(n²) z wcześniejsym wyjściem.
+///
+/// Domknięcie pierścienia (pierwszy punkt powtórzony na końcu — wymagane
+/// przez GeoJSON i Shapefile) NIE jest samoprzecięciem.
+pub fn find_self_intersection(ring: &[[f64; 2]]) -> Option<SelfIntersection> {
+    // usuń duplikat domykający: ostatni punkt == pierwszy
+    let mut m = ring.len();
+    if m >= 2 && same_pt(&ring[0], &ring[m - 1]) {
+        m -= 1;
+    }
+    if m < 3 {
+        return None;
+    }
+    for i in 0..m {
+        let a1 = ring[i];
+        let a2 = ring[(i + 1) % m];
+        if same_pt(&a1, &a2) {
+            continue; // zerowy odcinek — pomijamy
+        }
+        for j in (i + 1)..m {
+            // sąsiednie odcinki współdzielą wierzchołek — to legalne
+            if j == i + 1 || (i == 0 && j == m - 1) {
+                continue;
+            }
+            let b1 = ring[j];
+            let b2 = ring[(j + 1) % m];
+            if let Some(point) = segments_intersection_point(&a1, &a2, &b1, &b2) {
+                return Some(SelfIntersection {
+                    seg_a: i,
+                    seg_b: j,
+                    point,
+                });
+            }
+        }
+    }
+    None
 }
 
 /// Wykrywa samoprzecięcia obrysu (O(n2)). Wielokąty samoprzecinające się
 /// łamią ray-casting i shoelace'a — muszą być poprawione przez użytkownika.
 pub fn polygon_self_intersects(ring: &[[f64; 2]]) -> bool {
-    let n = ring.len();
-    if n < 3 {
-        return false;
-    }
-    for i in 0..n {
-        let a1 = ring[i];
-        let a2 = ring[(i + 1) % n];
-        if (a1[0] - a2[0]).abs() < 1e-12 && (a1[1] - a2[1]).abs() < 1e-12 {
-            continue; // zerowy odcinek — pomijamy
-        }
-        for j in (i + 1)..n {
-            // sąsiednie odcinki współdzielą wierzchołek — to legalne
-            if j == i + 1 || (i == 0 && j == n - 1) {
-                continue;
-            }
-            let b1 = ring[j];
-            let b2 = ring[(j + 1) % n];
-            if segments_intersect(&a1, &a2, &b1, &b2) {
-                return true;
-            }
-        }
-    }
-    false
+    find_self_intersection(ring).is_some()
 }
 
 fn polygon_perimeter(ring: &[[f64; 2]]) -> f64 {
@@ -771,7 +819,11 @@ pub fn generate(
             max_min_dist = max_min_dist.max(d);
             total_target += target;
             let poly = Polygon {
-                rings: vec![ring.clone()],
+                rings: {
+                    let mut rings = vec![ring.clone()];
+                    rings.extend(area.holes.iter().filter(|h| h.len() >= 3).cloned());
+                    rings
+                },
             };
             let ring_c2 = ring.clone();
 
@@ -1622,6 +1674,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         // 16 ha * 200/ha = 3200 celów
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
@@ -1649,6 +1702,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -1740,6 +1794,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         proj.edges = EdgeSettings {
             enabled: true,
@@ -1778,6 +1833,41 @@ mod tests {
     }
 
     #[test]
+    fn closed_ring_is_not_self_intersection() {
+        // GeoJSON/SHP wymagają powtórzenia pierwszego punktu na końcu —
+        // to NIE jest samoprzecięcie
+        let closed_square = vec![
+            [0.0, 0.0],
+            [100.0, 0.0],
+            [100.0, 100.0],
+            [0.0, 100.0],
+            [0.0, 0.0],
+        ];
+        assert!(find_self_intersection(&closed_square).is_none());
+        assert!(!polygon_self_intersects(&closed_square));
+    }
+
+    #[test]
+    fn find_self_intersection_reports_location() {
+        // zamknięty "motylek": przecięcie dokładnie w (50, 50)
+        let closed_bowtie = vec![
+            [0.0, 0.0],
+            [100.0, 100.0],
+            [100.0, 0.0],
+            [0.0, 100.0],
+            [0.0, 0.0],
+        ];
+        let ix = find_self_intersection(&closed_bowtie).expect("oczekiwano przecięcia");
+        assert!((ix.point[0] - 50.0).abs() < 1e-9);
+        assert!((ix.point[1] - 50.0).abs() < 1e-9);
+        assert_eq!(ix.seg_a, 0);
+        assert!(ix.seg_b >= 2 && ix.seg_b <= 3);
+
+        let square = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+        assert!(find_self_intersection(&square).is_none());
+    }
+
+    #[test]
     fn validate_rejects_self_intersecting_area() {
         let mut proj = zone_project(&[]);
         proj.zones.clear();
@@ -1790,6 +1880,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         let err = proj.validate().unwrap_err();
         assert!(err.contains("przecina sam siebie"), "{err}");
@@ -1810,6 +1901,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -1847,6 +1939,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 1_000);
@@ -1950,6 +2043,7 @@ mod tests {
                 None
             },
             color_filter: None,
+            holes: Vec::new(),
         };
         proj.areas.push(mk_area("Z granicą", 50.0, true));
         proj.areas.push(mk_area("Bez granicy", 620.0, false));
@@ -2002,6 +2096,7 @@ mod tests {
                 preset_mix: Vec::new(),
                 edges: None,
                 color_filter: None,
+                holes: Vec::new(),
             });
             proj
         };
@@ -2054,6 +2149,7 @@ mod tests {
                 samples: vec![green],
                 tolerance: 40,
             }),
+            holes: Vec::new(),
         });
 
         // mapa 1000 m, podkład 100 px => 10 m/px; lewa połowa to [0,500)
@@ -2079,6 +2175,7 @@ mod tests {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
         });
         let (objs2, _) = generate(&proj2, None, Some(&sat), None, None, &|_| {}).unwrap();
         assert!(objs2.iter().any(|o| o.x > 600.0));

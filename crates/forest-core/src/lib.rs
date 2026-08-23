@@ -10,6 +10,7 @@ pub mod heightmap;
 pub mod mask;
 pub mod preset;
 pub mod scatter;
+pub mod shp;
 pub mod species;
 pub mod user_presets;
 

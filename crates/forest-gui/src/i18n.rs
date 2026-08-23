@@ -39,16 +39,19 @@ impl Lang {
     }
 }
 
-/// Preferencje UI (język) — zapisywane obok presetów.
+/// Preferencje UI (język + skróty klawiszowe) — zapisywane obok presetów.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UiPrefs {
     #[serde(default)]
     pub language: String,
+    /// Skróty użytkownika: (nazwa akcji, skrót "Ctrl+O" / None = wyłączony).
+    #[serde(default)]
+    pub shortcuts: Vec<(String, Option<String>)>,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { language: "pl".into() }
+        Self { language: "pl".into(), shortcuts: Vec::new() }
     }
 }
 
@@ -251,6 +254,142 @@ const DICT: &[Entry] = &[
         "Wyczyść wszystkie obszary",
         "Clear all areas",
         "Alle Bereiche löschen",
+    ),
+    (
+        "📥 SHP",
+        "📥 SHP",
+        "📥 SHP",
+    ),
+    (
+        "Wczytaj poligony z Shapefile (.shp) — tylko geometria; atrybuty .dbf są ignorowane",
+        "Load polygons from a Shapefile (.shp) — geometry only; .dbf attributes are ignored",
+        "Polygone aus einem Shapefile (.shp) laden — nur Geometrie; .dbf-Attribute werden ignoriert",
+    ),
+    (
+        "📤 GeoJSON",
+        "📤 GeoJSON",
+        "📤 GeoJSON",
+    ),
+    (
+        "📥 GeoJSON",
+        "📥 GeoJSON",
+        "📥 GeoJSON",
+    ),
+    (
+        "Wczytaj poligony z pliku .geojson (etykieta/gęstość z properties, jeśli są)",
+        "Load polygons from a .geojson file (label/density from properties, if present)",
+        "Polygone aus einer .geojson-Datei laden (Label/Dichte aus properties, falls vorhanden)",
+    ),
+    (
+        "GeoJSON nie zawiera poligonów (obsługiwane: Polygon/MultiPolygon).",
+        "GeoJSON contains no polygons (supported: Polygon/MultiPolygon).",
+        "GeoJSON enthält keine Polygone (unterstützt: Polygon/MultiPolygon).",
+    ),
+    (
+        "Zaimportowano {0} obszarów z GeoJSON (dziur: {1}). Przypisz presety w panelu 📐 Obszary, aby generowały drzewa.",
+        "Imported {0} areas from GeoJSON (holes: {1}). Assign presets in the 📐 Areas panel to grow trees.",
+        "{0} Bereiche aus GeoJSON importiert (Löcher: {1}). Weisen Sie im Panel 📐 Bereiche Presets zu, um Bäume zu erzeugen.",
+    ),
+    (
+        "Zapisz poligony (z dziurami) jako .geojson w układzie mapy (offset TB dodany ponownie)",
+        "Save polygons (with holes) as .geojson in map coordinates (TB offset re-applied)",
+        "Polygone (mit Löchern) als .geojson in Kartenkoordinaten speichern (TB-Offset wieder angewendet)",
+    ),
+    (
+        "Brak obszarów z poprawnym poligonem do eksportu.",
+        "No areas with a valid polygon to export.",
+        "Keine Bereiche mit gültigem Polygon zum Export.",
+    ),
+    (
+        "Wyeksportowano {0} obszarów do {1}.",
+        "Exported {0} areas to {1}.",
+        "{0} Bereiche nach {1} exportiert.",
+    ),
+    (
+        "🎯 Zaznacz obszary",
+        "🎯 Select areas",
+        "🎯 Bereiche auswählen",
+    ),
+    (
+        "🎯 Zaznaczanie: WŁ",
+        "🎯 Selecting: ON",
+        "🎯 Auswählen: EIN",
+    ),
+    (
+        "Kliknij obszar = przełącz zaznaczenie; przeciągnij = ramka zaznaczająca kilka naraz",
+        "Click an area = toggle selection; drag = rubber-band select multiple",
+        "Klick auf Bereich = Auswahl umschalten; ziehen = Rahmen für Mehrfachauswahl",
+    ),
+    (
+        "Wyczyść zaznaczenie",
+        "Clear selection",
+        "Auswahl aufheben",
+    ),
+    (
+        "Tylko zaznaczone ({0})",
+        "Only selected ({0})",
+        "Nur ausgewählte ({0})",
+    ),
+    (
+        "Szukaj gatunku / modelu...",
+        "Search species / model...",
+        "Art / Modell suchen...",
+    ),
+    (
+        "Szukaj obszaru...",
+        "Search area...",
+        "Bereich suchen...",
+    ),
+    (
+        "➕ Dodaj gatunek...",
+        "➕ Add species...",
+        "➕ Art hinzufügen...",
+    ),
+    (
+        "Gatunki granicy (tylko używane):",
+        "Edge species (only used):",
+        "Waldrand-Arten (nur verwendete):",
+    ),
+    (
+        "Usuń z granicy",
+        "Remove from edge",
+        "Aus Waldrand entfernen",
+    ),
+    (
+        "Dodaj gatunek do pasa granicznego (startowa waga 1.0)",
+        "Add a species to the forest edge band (starting weight 1.0)",
+        "Art zum Waldrandstreifen hinzufügen (Startgewicht 1.0)",
+    ),
+    (
+        "(brak wyników)",
+        "(no results)",
+        "(keine Ergebnisse)",
+    ),
+    ("⌨ Skróty klawiszowe", "⌨ Keyboard shortcuts", "⌨ Tastenkürzel"),
+    (
+        "Kliknij przycisk ze skrótem i naciśnij nowy klawisz (Esc = anuluj). ✖ wyłącza skrót.",
+        "Click a shortcut button and press a new key (Esc = cancel). ✖ disables the shortcut.",
+        "Auf eine Kürzel-Schaltfläche klicken und neue Taste drücken (Esc = Abbruch). ✖ deaktiviert das Kürzel.",
+    ),
+    ("Naciśnij klawisz…", "Press a key…", "Taste drücken…"),
+    ("— brak —", "— none —", "— keine —"),
+    ("Wyłącz skrót", "Disable shortcut", "Kürzel deaktivieren"),
+    ("Przywróć domyślne", "Restore defaults", "Standardwerte wiederherstellen"),
+    (
+        "Pomoc: skróty klawiszowe (podgląd i edycja przypisań)",
+        "Help: keyboard shortcuts (view and edit bindings)",
+        "Hilfe: Tastenkürzel (anzeigen und bearbeiten)",
+    ),
+    ("🔍 Szukaj presetu...", "🔍 Search presets...", "🔍 Presets suchen..."),
+    (
+        "Zaimportowano {0} obszarów z SHP (dziur: {1}). Przypisz presety w panelu 📐 Obszary, aby generowały drzewa.",
+        "Imported {0} areas from SHP (holes: {1}). Assign presets in the 📐 Areas panel to grow trees.",
+        "{0} Bereiche aus SHP importiert (Löcher: {1}). Weisen Sie im Panel 📐 Bereiche Presets zu, um Bäume zu erzeugen.",
+    ),
+    (
+        "Shapefile nie zawiera poligonów (tylko Polygon/PolygonZ/PolygonM).",
+        "Shapefile contains no polygons (only Polygon/PolygonZ/PolygonM are supported).",
+        "Shapefile enthält keine Polygone (nur Polygon/PolygonZ/PolygonM werden unterstützt).",
     ),
     // --- komunikaty ---
     ("Gotowy.", "Ready.", "Fertig."),

@@ -1,5 +1,6 @@
 ﻿//! forest-gui — desktopowy generator lasów DayZ (egui/eframe).
 
+use std::collections::HashSet;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
@@ -33,9 +34,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|_cc| {
             let mut app = ForestApp::new();
             let prefs = i18n::UiPrefs::load(i18n::PREFS_FILE);
-            if let Some(l) = Lang::from_code(&prefs.language) {
-                app.lang = l;
-            }
+            app.apply_prefs(&prefs);
             app.load_user_presets();
             Box::new(app)
         }),
@@ -81,6 +80,31 @@ struct ForestApp {
     editing_area: Option<usize>,
     /// Indeks wybranego/przesuwanego wierzchołka w edytowanym obszarze.
     editing_vertex: Option<usize>,
+
+    /// Punkty samoprzecięć obszarów do zaznaczenia na mapie:
+    /// (indeks obszaru, indeks dziury — None = obrys, punkt [x, y]).
+    intersection_marks: Vec<(usize, Option<usize>, [f64; 2])>,
+
+    /// Zaznaczone obszary (indeksy) — narzędzie 🎯 + filtr w panelu Obszary.
+    selected_areas: HashSet<usize>,
+    /// Tryb zaznaczania na mapie (klik = przełącz, przeciągnięcie = ramka).
+    select_mode: bool,
+    /// Początek ramki zaznaczania (współrzędne ekranu).
+    select_drag_start: Option<egui::Pos2>,
+    /// Panel Obszary: pokazuj tylko zaznaczone.
+    show_only_selected: bool,
+    /// Szukajka: gatunki / obszary.
+    species_search: String,
+    area_search: String,
+
+    /// Skróty klawiszowe (akcja -> klawisz; None = wyłączony).
+    shortcuts: std::collections::HashMap<Action, Option<KeyBind>>,
+    /// Okno pomocy ze skrótami.
+    show_shortcuts_help: bool,
+    /// Akcja oczekująca na przechwycenie nowego klawisza.
+    rebinding: Option<Action>,
+    /// Szukajka presetów stref (lista rozwijana w panelu 🌲).
+    zone_preset_search: String,
 
     /// Indeks strefy, której kolor jest właśnie edytowany.
     zone_color_edit: Option<usize>,
@@ -147,6 +171,17 @@ impl ForestApp {
             draw_points: Vec::new(),
             editing_area: None,
             editing_vertex: None,
+            intersection_marks: Vec::new(),
+            selected_areas: HashSet::new(),
+            select_mode: false,
+            select_drag_start: None,
+            show_only_selected: false,
+            species_search: String::new(),
+            area_search: String::new(),
+            shortcuts: default_bindings(),
+            show_shortcuts_help: false,
+            rebinding: None,
+            zone_preset_search: String::new(),
             zone_color_edit: None,
             sampling_area: None,
             area_copy_src: Vec::new(),
@@ -237,6 +272,153 @@ impl ForestApp {
         }
     }
 
+    fn load_shp_areas(&mut self, path: &str) {
+        let lang = self.lang;
+        match forest_core::shp::ShapefileData::load(path) {            Ok(mut shp) => {
+                shp.normalize_easting(self.project.easting_offset);
+                let mut added = 0usize;
+                let mut holes = 0usize;
+                for poly in shp.polygons {
+                    let Some(outer) = poly.rings.first() else {
+                        continue;
+                    };
+                    if outer.len() < 3 {
+                        continue;
+                    }
+                    let label = format!("{} {}", tr(lang, "Obszar"), self.project.areas.len() + 1);
+                    let area_holes: Vec<Vec<[f64; 2]>> = poly
+                        .rings
+                        .iter()
+                        .skip(1)
+                        .filter(|h| h.len() >= 3)
+                        .cloned()
+                        .collect();
+                    holes += area_holes.len();
+                    self.project.areas.push(forest_core::preset::AreaDef {
+                        enabled: true,
+                        label,
+                        density_per_ha: 0.0,
+                        species_weights: Vec::new(),
+                        preset_mix: Vec::new(),
+                        edges: None,
+                        color_filter: None,
+                        holes: area_holes,
+                        polygon: outer.clone(),
+                    });
+                    self.area_copy_src.push(None);
+                    added += 1;
+                }
+                if added == 0 {
+                    self.error = Some(
+                        tr(lang, "Shapefile nie zawiera poligonów (tylko Polygon/PolygonZ/PolygonM).")
+                            .into(),
+                    );
+                    return;
+                }
+                self.refresh_intersection_marks();
+                self.error = None;
+                self.info = Some(tf(
+                    lang,
+                    "Zaimportowano {0} obszarów z SHP (dziur: {1}). Przypisz presety w panelu 📐 Obszary, aby generowały drzewa.",
+                    &[&added.to_string(), &holes.to_string()],
+                ));
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    fn load_geojson_areas(&mut self, path: &str) {
+        let lang = self.lang;
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error = Some(format!("Nie udało się wczytać GeoJSON: {e}"));
+                return;
+            }
+        };
+        let imported = match forest_core::geojson::areas_from_geojson(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                self.error = Some(e);
+                return;
+            }
+        };
+
+        // normalizacja easting jak w SHP: max x > 100000 -> odejmij offset
+        let mut max_x = f64::NEG_INFINITY;
+        for ia in &imported {
+            for c in &ia.outer {
+                max_x = max_x.max(c[0]);
+            }
+            for h in &ia.holes {
+                for c in h {
+                    max_x = max_x.max(c[0]);
+                }
+            }
+        }
+        let off =
+            if max_x.is_finite() && max_x > 100_000.0 && self.project.easting_offset > 0.0 {
+                self.project.easting_offset
+            } else {
+                0.0
+            };
+        // eksport dodał też northing — zdejmij go razem z easting
+        let off_n = if off > 0.0 { self.project.northing_offset } else { 0.0 };
+        let shift = |ring: &Vec<[f64; 2]>| -> Vec<[f64; 2]> {
+            ring.iter()
+                .map(|c| [c[0] - off, c[1] - off_n])
+                .collect()
+        };
+
+        let mut added = 0usize;
+        let mut holes_total = 0usize;
+        for ia in imported {
+            if ia.outer.len() < 3 {
+                continue;
+            }
+            let holes_kept: Vec<Vec<[f64; 2]>> = ia
+                .holes
+                .iter()
+                .filter(|h| h.len() >= 3)
+                .map(shift)
+                .collect();
+            holes_total += holes_kept.len();
+            let label = ia.label.unwrap_or_else(|| {
+                format!("{} {}", tr(lang, "Obszar"), self.project.areas.len() + 1)
+            });
+            self.project.areas.push(forest_core::preset::AreaDef {
+                enabled: ia.enabled.unwrap_or(true),
+                label,
+                density_per_ha: ia.density_per_ha.unwrap_or(0.0),
+                species_weights: Vec::new(),
+                preset_mix: Vec::new(),
+                edges: None,
+                color_filter: None,
+                holes: holes_kept,
+                polygon: shift(&ia.outer),
+            });
+            self.area_copy_src.push(None);
+            added += 1;
+        }
+        if added == 0 {
+            self.error = Some(
+                tr(
+                    lang,
+                    "GeoJSON nie zawiera poligonów (obsługiwane: Polygon/MultiPolygon).",
+                )
+                .into(),
+            );
+            return;
+        }
+        self.refresh_intersection_marks();
+        self.error = None;
+        self.info = Some(tf(
+            lang,
+            "Zaimportowano {0} obszarów z GeoJSON (dziur: {1}). Przypisz presety w panelu 📐 Obszary, aby generowały drzewa.",
+            &[&added.to_string(), &holes_total.to_string()],
+        ));
+    }
+
     // --- generowanie ----------------------------------------------------------
 
     fn start_generation(&mut self, ctx: &egui::Context) {
@@ -255,6 +437,7 @@ impl ForestApp {
         self.draw_points.clear();
         self.sampling_area = None;
         self.project.sanitize();
+        self.refresh_intersection_marks();
         if let Err(e) = self.project.validate() {
             self.error = Some(e);
             return;
@@ -567,18 +750,39 @@ impl ForestApp {
 
     // --- obszary rysowane (poligony) -----------------------------------------
 
+    /// Przeskanuj obszary (obrysy + dziury) i zapamiętaj punkty samoprzecięć
+    /// do wyświetlenia jako czerwone znaczniki na mapie.
+    fn refresh_intersection_marks(&mut self) {
+        self.intersection_marks.clear();
+        for (ai, a) in self.project.areas.iter().enumerate() {
+            if let Some(ix) = forest_core::scatter::find_self_intersection(&a.polygon) {
+                self.intersection_marks.push((ai, None, ix.point));
+            }
+            for (hi, h) in a.holes.iter().enumerate() {
+                if let Some(ix) = forest_core::scatter::find_self_intersection(h) {
+                    self.intersection_marks.push((ai, Some(hi), ix.point));
+                }
+            }
+        }
+    }
+
     fn finish_area(&mut self) {
         let lang = self.lang;
         if self.draw_points.len() < 3 {
             self.error = Some("Poligon wymaga >= 3 punktów.".into());
             return;
         }
-        if forest_core::scatter::polygon_self_intersects(&self.draw_points) {
-            self.error = Some(
-                "Obrys przecina sam siebie (odcinki się krzyżują) — cofnij (Backspace) \
-                 lub przesuń wierzchołki tak, aby linia nie przecinała samej siebie."
-                    .into(),
-            );
+        if let Some(ix) = forest_core::scatter::find_self_intersection(&self.draw_points) {
+            self.error = Some(format!(
+                "Obrys przecina sam siebie: odcinki #{}–#{} i #{}–#{} krzyżują się w punkcie \
+                 ({:.1}, {:.1}) — zaznaczonym na mapie. Cofnij (Backspace) lub przesuń wierzchołki.",
+                ix.seg_a,
+                ix.seg_a + 1,
+                ix.seg_b,
+                ix.seg_b + 1,
+                ix.point[0],
+                ix.point[1]
+            ));
             return;
         }
         let label = format!("{} {}", tr(self.lang, "Obszar"), self.project.areas.len() + 1);
@@ -593,17 +797,100 @@ impl ForestApp {
             preset_mix: Vec::new(),
             edges: None,
             color_filter: None,
+            holes: Vec::new(),
             polygon: std::mem::take(&mut self.draw_points),
         });
         self.area_copy_src.push(None);
         let area_label = self.project.areas.last().unwrap().label.clone();
         let ha_str = format!("{:.1}", area_ha);
+        self.refresh_intersection_marks();
         self.info = Some(tf(lang, "Dodano obszar '{0}' ({1:.1} ha). Przypisz presety w panelu 📐 Obszary, aby generował drzewa.", &[area_label.as_str(), ha_str.as_str()]));
     }
 
     fn cancel_drawing(&mut self) {
         self.draw_mode = false;
         self.draw_points.clear();
+    }
+
+    /// Włącz/wyłącz rysowanie poligonu (wzajemnie wykluczające z 🎯).
+    fn toggle_draw_mode(&mut self) {
+        self.draw_mode = !self.draw_mode;
+        self.select_mode = false;
+        if !self.draw_mode {
+            self.draw_points.clear();
+        }
+    }
+
+    /// Włącz/wyłącz tryb zaznaczania obszarów.
+    fn toggle_select_mode(&mut self) {
+        self.select_mode = !self.select_mode;
+        self.select_drag_start = None;
+        if self.select_mode {
+            self.draw_mode = false;
+            self.draw_points.clear();
+            self.editing_area = None;
+            self.editing_vertex = None;
+        }
+    }
+
+    /// Tekst skrótu akcji do podpowiedzi np. " (Ctrl+O)" albo "".
+    fn bind_hint(&self, a: Action) -> String {
+        self.shortcuts
+            .get(&a)
+            .and_then(|b| b.as_ref())
+            .map(|b| format!(" ({})", b.text()))
+            .unwrap_or_default()
+    }
+
+    /// Wykonaj akcję z toolbara (skrót klawiszowy).
+    fn run_action(&mut self, ctx: &egui::Context, a: Action) {
+        match a {
+            Action::Generate => self.start_generation(ctx),
+            Action::ExportTxt => {
+                if !self.objects.is_empty() {
+                    self.export_txt();
+                }
+            }
+            Action::ExportPng => {
+                if !self.objects.is_empty() {
+                    self.export_trees_png();
+                }
+            }
+            Action::OpenProject => self.load_project(ctx),
+            Action::SaveProject => self.save_project(),
+            Action::DrawArea => self.toggle_draw_mode(),
+            Action::SelectAreas => self.toggle_select_mode(),
+            Action::FitView => {
+                self.zoom = 1.0;
+                self.pan = Vec2::ZERO;
+            }
+        }
+    }
+
+    /// Wczytaj preferencje UI (język + skróty).
+    fn apply_prefs(&mut self, prefs: &i18n::UiPrefs) {
+        if let Some(l) = Lang::from_code(&prefs.language) {
+            self.lang = l;
+        }
+        for (name, b) in &prefs.shortcuts {
+            if let Some(a) = Action::from_name(name) {
+                self.shortcuts.insert(a, b.as_deref().and_then(KeyBind::parse));
+            }
+        }
+    }
+
+    /// Zapisz preferencje UI (język + aktualne skróty).
+    fn save_prefs(&self) {
+        let shortcuts = self
+            .shortcuts
+            .iter()
+            .map(|(a, b)| (a.name().to_string(), b.map(|k| k.text())))
+            .collect();
+        i18n::UiPrefs {
+            language: self.lang.code().into(),
+            shortcuts,
+        }
+        .save(i18n::PREFS_FILE);
     }
 }
 
@@ -720,6 +1007,258 @@ fn with_extension(mut path: std::path::PathBuf, ext: &str) -> std::path::PathBuf
 
 /// Wiersze miksu presetów: udział + usuwanie, poniżej combo dodawania.
 /// Zwraca true, gdy coś zmieniono. `presets` = łączna lista (nazwa → snap).
+
+// --- Skróty klawiszowe ---------------------------------------------------------
+
+/// Akcje dostępne pod skrótami klawiszowymi.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Action {
+    Generate,
+    ExportTxt,
+    ExportPng,
+    OpenProject,
+    SaveProject,
+    DrawArea,
+    SelectAreas,
+    FitView,
+}
+
+impl Action {
+    /// Nazwa do serializacji w ui_settings.json.
+    pub fn name(self) -> &'static str {
+        match self {
+            Action::Generate => "generate",
+            Action::ExportTxt => "export_txt",
+            Action::ExportPng => "export_png",
+            Action::OpenProject => "open_project",
+            Action::SaveProject => "save_project",
+            Action::DrawArea => "draw_area",
+            Action::SelectAreas => "select_areas",
+            Action::FitView => "fit_view",
+        }
+    }
+    pub fn from_name(s: &str) -> Option<Action> {
+        Some(match s {
+            "generate" => Action::Generate,
+            "export_txt" => Action::ExportTxt,
+            "export_png" => Action::ExportPng,
+            "open_project" => Action::OpenProject,
+            "save_project" => Action::SaveProject,
+            "draw_area" => Action::DrawArea,
+            "select_areas" => Action::SelectAreas,
+            "fit_view" => Action::FitView,
+            _ => return None,
+        })
+    }
+    /// Etykieta PL (słownik może przetłumaczyć).
+    pub fn label(self) -> &'static str {
+        match self {
+            Action::Generate => "▶ Generuj",
+            Action::ExportTxt => "💾 Eksport TXT (TB)",
+            Action::ExportPng => "🖼 Eksport PNG (drzewa)",
+            Action::OpenProject => "📂 Wczytaj projekt",
+            Action::SaveProject => "💾 Zapisz projekt",
+            Action::DrawArea => "✏ Rysuj obszar",
+            Action::SelectAreas => "🎯 Zaznacz obszary",
+            Action::FitView => "Dopasuj widok",
+        }
+    }
+}
+
+/// Przypisanie klawisza (+ modyfikatory) do akcji.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyBind {
+    pub key: egui::Key,
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+}
+
+impl KeyBind {
+    pub fn text(self) -> String {
+        let mut s = String::new();
+        if self.ctrl {
+            s.push_str("Ctrl+");
+        }
+        if self.shift {
+            s.push_str("Shift+");
+        }
+        if self.alt {
+            s.push_str("Alt+");
+        }
+        s.push_str(&format!("{:?}", self.key));
+        s
+    }
+    pub fn parse(s: &str) -> Option<KeyBind> {
+        let mut kb = KeyBind {
+            key: egui::Key::Escape,
+            ctrl: false,
+            shift: false,
+            alt: false,
+        };
+        let mut got_key = false;
+        for part in s.split('+') {
+            match part.trim() {
+                "Ctrl" => kb.ctrl = true,
+                "Shift" => kb.shift = true,
+                "Alt" => kb.alt = true,
+                p => match parse_key(p) {
+                    Some(k) if !got_key => {
+                        kb.key = k;
+                        got_key = true;
+                    }
+                    _ => return None,
+                },
+            }
+        }
+        got_key.then_some(kb)
+    }
+}
+
+fn matches_bind(i: &egui::InputState, b: KeyBind) -> bool {
+    i.key_pressed(b.key)
+        && i.modifiers.ctrl == b.ctrl
+        && i.modifiers.shift == b.shift
+        && i.modifiers.alt == b.alt
+}
+
+fn parse_key(s: &str) -> Option<egui::Key> {
+    BINDABLE_KEYS
+        .iter()
+        .copied()
+        .find(|k| format!("{k:?}") == s)
+}
+
+/// Klawisze możliwe do przypisania (nazwy = `format!("{:?}")`).
+const BINDABLE_KEYS: &[egui::Key] = &[
+    egui::Key::A, egui::Key::B, egui::Key::C, egui::Key::D, egui::Key::E,
+    egui::Key::F, egui::Key::G, egui::Key::H, egui::Key::I, egui::Key::J,
+    egui::Key::K, egui::Key::L, egui::Key::M, egui::Key::N, egui::Key::O,
+    egui::Key::P, egui::Key::Q, egui::Key::R, egui::Key::S, egui::Key::T,
+    egui::Key::U, egui::Key::V, egui::Key::W, egui::Key::X, egui::Key::Y,
+    egui::Key::Z,
+    egui::Key::F1, egui::Key::F2, egui::Key::F3, egui::Key::F4, egui::Key::F5,
+    egui::Key::F6, egui::Key::F7, egui::Key::F8, egui::Key::F9, egui::Key::F10,
+    egui::Key::F11, egui::Key::F12,
+    egui::Key::ArrowLeft, egui::Key::ArrowRight, egui::Key::ArrowUp,
+    egui::Key::ArrowDown,
+    egui::Key::Home, egui::Key::End, egui::Key::PageUp, egui::Key::PageDown,
+    egui::Key::Insert, egui::Key::Delete, egui::Key::Backspace,
+    egui::Key::Space, egui::Key::Enter, egui::Key::Tab,
+];
+
+fn default_bindings() -> std::collections::HashMap<Action, Option<KeyBind>> {
+    use egui::Key as K;
+    [
+        (Action::Generate, Some(K::G)),
+        (Action::ExportTxt, Some(K::T)),
+        (Action::ExportPng, Some(K::P)),
+        (Action::OpenProject, Some(K::O)),
+        (Action::SaveProject, Some(K::S)),
+        (Action::DrawArea, Some(K::D)),
+        (Action::SelectAreas, Some(K::X)),
+        (Action::FitView, Some(K::F)),
+    ]
+    .into_iter()
+    .map(|(a, k)| {
+        (
+            a,
+            k.map(|key| KeyBind {
+                key,
+                ctrl: matches!(a, Action::OpenProject | Action::SaveProject),
+                shift: false,
+                alt: false,
+            }),
+        )
+    })
+    .collect()
+}
+
+/// ComboBox z polkiem 🔍 na górze rozwiniętej listy. Stan wyszukiwania jest
+/// pamiętany per-combo (egui Memory). `items` to etykiety; `on_select(ui, idx)`
+/// rysuje klikalną pozycję o podanym indeksie.
+fn searchable_combo(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    id: &str,
+    selected_text: String,
+    width: f32,
+    items: &[String],
+    mut on_select: impl FnMut(&mut egui::Ui, usize),
+) {
+let popup_id = egui::Id::new(format!("{id}_popup"));
+    let q_id = egui::Id::new(format!("{id}_search"));
+    let focus_key = egui::Id::new(format!("{id}_focused"));
+    let mut is_open = ui.memory(|m| m.is_popup_open(popup_id));
+
+    let response = ui.button(selected_text.clone());
+    if response.clicked() {
+        is_open = !is_open;
+        ui.memory_mut(|m| {
+            if is_open {
+                m.open_popup(popup_id);
+                // nowe otwarcie -> autofokus ma zadziałać ponownie
+                m.data.insert_temp(focus_key, false);
+            } else {
+                m.close_popup();
+            }
+        });
+    }
+
+    if is_open {
+        egui::popup::popup_below_widget(ui, popup_id, &response, |ui| {
+            let mut q = ui
+                .memory_mut(|m| m.data.get_temp::<String>(q_id))
+                .unwrap_or_default();
+            // kompaktowa szukajka: bez ramki, mniejsza czcionka
+            let text_edit_response = ui.add(
+                egui::TextEdit::singleline(&mut q)
+                    .hint_text("🔍 Szukaj...")
+                    .desired_width(width)
+                    .font(egui::FontId::proportional(12.0))
+                    .frame(false),
+            );
+            // autofokus po włączeniu popupu
+            if !ui.memory(|m| m.data.get_temp::<bool>(focus_key)).unwrap_or(false) {
+                text_edit_response.request_focus();
+                ui.memory_mut(|m| m.data.insert_temp(focus_key, true));
+            }
+            ui.memory_mut(|m| m.data.insert_temp(q_id, q.clone()));
+
+            // Utrzymuj popup otwarty gdy TextEdit ma fokus
+            if text_edit_response.has_focus() || ui.memory(|m| m.has_focus(q_id)) {
+                ui.memory_mut(|m| m.open_popup(popup_id));
+            }
+
+            let ql = q.trim().to_lowercase();
+            let mut shown = 0usize;
+            let mut filtered: Vec<usize> = Vec::new();
+            for (i, label) in items.iter().enumerate() {
+                if !ql.is_empty() && !label.to_lowercase().contains(&ql) {
+                    continue;
+                }
+                filtered.push(i);
+                shown += 1;
+            }
+            // maks. 10 widocznych pozycji, reszta w scrolu
+            egui::ScrollArea::vertical()
+                .id_source(format!("{id}_list"))
+                .max_height(10.0 * 20.0)
+                .show(ui, |ui| {
+                    for &i in &filtered {
+                        on_select(ui, i);
+                    }
+                });
+            if shown == 0 {
+                ui.weak(tr(lang, "(brak wyników)"));
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                ui.memory_mut(|m| m.close_popup());
+            }
+        });
+    }
+}
+
 fn ui_mix_rows(
     ui: &mut egui::Ui,
     lang: Lang,
@@ -764,25 +1303,31 @@ fn ui_mix_rows(
     // dodawanie presetu do miksu — jedno kliknięcie na pozycji listy
     ui.horizontal(|ui| {
         ui.label(tr(lang, "Dodaj preset:"));
-        egui::ComboBox::from_id_source(egui::Id::new(format!("mix_add_{id}")))
-            .selected_text(tr(lang, "wybierz z listy..."))
-            .show_ui(ui, |ui| {
-                for (n, s) in presets.iter() {
-                    let already = mix.iter().any(|(m, _)| m == n);
-                    let label = if already {
-                        format!("✓ {}", tr(lang, n))
-                    } else {
-                        format!("{}  ({:.0}/ha)", tr(lang, n), s.density_per_ha)
-                    };
-                    if ui
-                        .add_enabled(!already, egui::Button::new(label))
-                        .clicked()
-                    {
-                        mix.push((n.clone(), 1.0));
-                        changed = true;
-                    }
+        let items: Vec<String> = presets
+            .iter()
+            .map(|(n, s)| format!("{}  ({:.0}/ha)", tr(lang, n), s.density_per_ha))
+            .collect();
+        searchable_combo(
+            ui,
+            lang,
+            &format!("mix_add_{id}"),
+            tr(lang, "wybierz z listy..."),
+            170.0,
+            &items,
+            |ui, i| {
+                let (n, _s) = &presets[i];
+                let already = mix.iter().any(|(m, _)| m == n);
+                let label = if already {
+                    format!("✓ {}", tr(lang, n))
+                } else {
+                    items[i].clone()
+                };
+                if ui.add_enabled(!already, egui::Button::new(label)).clicked() {
+                    mix.push((n.clone(), 1.0));
+                    changed = true;
                 }
-            });
+            },
+        );
         if mix.len() > 1 {
             ui.small(tr(
                 lang,
@@ -914,9 +1459,11 @@ fn setting_u32(ui: &mut egui::Ui, label: String, v: &mut u32, d: u32, range: std
 
 /// Wspólny edytor ustawień granicy (globalnej lub per-obszar).
 /// `d` = wartości odniesienia dla przycisków ⟲.
+/// `id` = unikalny sufiks dla widgetów (global vs per-obszar).
 fn ui_edge_settings(
         ui: &mut egui::Ui,
         lang: Lang,
+        id: &str,
     e: &mut EdgeSettings,
     d: &EdgeSettings,
     species: &[forest_core::species::SpeciesDef],
@@ -990,7 +1537,7 @@ fn ui_edge_settings(
             },
         );
         ui.horizontal(|ui| {
-            ui.small(tr(lang, "Wagi gatunków granicy:"));
+            ui.small(tr(lang, "Gatunki granicy (tylko używane):"));
             let m = e.species_weights != d.species_weights;
             if reset_btn(ui, m) {
                 // przywróć domyślne krzewy, odfiltrowując spoza listy gatunków
@@ -1002,7 +1549,14 @@ fn ui_edge_settings(
                     .collect();
             }
         });
-        for si in 0..n_species {
+        // lista TYLKO gatunków obecnych w miksie (reszta ukryta, żeby nie
+        // przewijać kilkudziesięciu nieużywanych pozycji)
+        let mut remove_k: Option<usize> = None;
+        for k in 0..e.species_weights.len() {
+            let si = e.species_weights[k].0;
+            if si >= n_species {
+                continue;
+            }
             let sp = &species[si];
             let c = sp.effective_color(si);
             ui.horizontal(|ui| {
@@ -1013,27 +1567,59 @@ fn ui_edge_settings(
                     Color32::from_rgb(c[0], c[1], c[2]),
                 );
                 ui.label(sp.label.as_str());
-                let pos = e.species_weights.iter().position(|(i, _)| *i == si);
-                let mut w = pos.map_or(0.0, |k| e.species_weights[k].1);
-                let before = w;
-                ui.add(egui::DragValue::new(&mut w).speed(0.05).clamp_range(0.0..=20.0));
-                if (w - before).abs() > f32::EPSILON {
-                    match pos {
-                        Some(k) => {
-                            if w <= 0.0 {
-                                e.species_weights.remove(k);
-                            } else {
-                                e.species_weights[k].1 = w;
-                            }
-                        }
-                        None => {
-                            if w > 0.0 {
-                                e.species_weights.push((si, w));
-                            }
-                        }
+                let mut w = e.species_weights[k].1;
+                if ui
+                    .add(egui::DragValue::new(&mut w).speed(0.05).clamp_range(0.0..=20.0))
+                    .changed()
+                {
+                    if w <= 0.0 {
+                        remove_k = Some(k);
+                    } else {
+                        e.species_weights[k].1 = w;
                     }
                 }
+                if ui
+                    .button("✖")
+                    .on_hover_text(tr(lang, "Usuń z granicy"))
+                    .clicked()
+                {
+                    remove_k = Some(k);
+                }
             });
+        }
+        if let Some(k) = remove_k {
+            if k < e.species_weights.len() {
+                e.species_weights.remove(k);
+            }
+        }
+        // dodawanie: tylko gatunki jeszcze nieobecne w granicy
+        let candidates: Vec<usize> = (0..n_species)
+            .filter(|si| !e.species_weights.iter().any(|(i, _)| i == si))
+            .collect();
+        let items: Vec<String> = candidates
+            .iter()
+            .map(|&si| species[si].label.clone())
+            .collect();
+        let mut picked: Option<usize> = None;
+        searchable_combo(
+            ui,
+            lang,
+            &format!("edge_add_{id}"),
+            tr(lang, "➕ Dodaj gatunek...").to_string(),
+            190.0,
+            &items,
+            |ui, i| {
+                if ui.selectable_label(false, items[i].as_str()).clicked() {
+                    picked = Some(i);
+                }
+            },
+        );
+        ui.small(tr(
+            lang,
+            "Dodaj gatunek do pasa granicznego (startowa waga 1.0)",
+        ));
+        if let Some(i) = picked {
+            e.species_weights.push((candidates[i], 1.0));
         }
     });
 }
@@ -1194,6 +1780,45 @@ impl ForestApp {
         }
     }
 
+    fn export_areas(&mut self) {
+        let lang = self.lang;
+        let valid = self
+            .project
+            .areas
+            .iter()
+            .filter(|a| a.polygon.len() >= 3)
+            .count();
+        if valid == 0 {
+            self.error =
+                Some(tr(lang, "Brak obszarów z poprawnym poligonem do eksportu.").into());
+            return;
+        }
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("GeoJSON", &["geojson", "json"])
+            .set_file_name("areas.geojson")
+            .save_file()
+        {
+            match forest_core::geojson::areas_to_geojson(
+                &self.project.areas,
+                self.project.easting_offset,
+                self.project.northing_offset,
+            ) {
+                Ok(json) => match std::fs::write(&path, json) {
+                    Ok(()) => {
+                        self.info = Some(tf(
+                            lang,
+                            "Wyeksportowano {0} obszarów do {1}.",
+                            &[&valid.to_string(), &path.display().to_string()],
+                        ));
+                        self.error = None;
+                    }
+                    Err(e) => self.error = Some(e.to_string()),
+                },
+                Err(e) => self.error = Some(e),
+            }
+        }
+    }
+
     fn import_zones(&mut self) {
         let lang = self.lang;
         if let Some(path) = rfd::FileDialog::new()
@@ -1344,6 +1969,53 @@ impl eframe::App for ForestApp {
         self.poll_generation(ctx);
         self.poll_histogram(ctx);
 
+        // przechwytywanie nowego klawisza dla edytowanego skrótu
+        if let Some(act) = self.rebinding {
+            let ev = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        repeat: false,
+                        ..
+                    } => Some((*key, *modifiers)),
+                    _ => None,
+                })
+            });
+            if let Some((key, mods)) = ev {
+                if key != egui::Key::Escape {
+                    self.shortcuts.insert(
+                        act,
+                        Some(KeyBind {
+                            key,
+                            ctrl: mods.ctrl,
+                            shift: mods.shift,
+                            alt: mods.alt,
+                        }),
+                    );
+                }
+                self.rebinding = None;
+                self.save_prefs();
+            }
+        }
+        // globalne skróty (nie działają, gdy użytkownik pisze w polu tekstowym)
+        if !ctx.wants_keyboard_input() && self.rebinding.is_none() {
+            let mut fired: Vec<Action> = Vec::new();
+            ctx.input(|i| {
+                for (a, b) in &self.shortcuts {
+                    if let Some(b) = b {
+                        if matches_bind(i, *b) {
+                            fired.push(*a);
+                        }
+                    }
+                }
+            });
+            for a in fired {
+                self.run_action(ctx, a);
+            }
+        }
+
         // autosave co 60s jeśli projekt ma ścieżkę (cichy, bez spamowania info)
         if let Some(path) = self.project_path.clone() {
             if self
@@ -1401,99 +2073,223 @@ impl eframe::App for ForestApp {
             .default_width(370.0)
             .show(ctx, |ui| {
                 self.ui_presets_layers(ui);
-            });       egui::CentralPanel::default().show(ctx, |ui| {
-            self.ui_toolbar(ui);
+            });                self.ui_toolbar(ctx);
+        egui::CentralPanel::default().show(ctx, |ui| {
             self.ui_canvas(ui);
         });
+
+        // okno pomocy: lista skrótów + edycja przypisań
+        if self.show_shortcuts_help {
+            let mut open = true;
+            egui::Window::new(tr(lang, "⌨ Skróty klawiszowe"))
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    ui.small(tr(
+                        lang,
+                        "Kliknij przycisk ze skrótem i naciśnij nowy klawisz (Esc = anuluj). ✖ wyłącza skrót.",
+                    ));
+                    ui.separator();
+                    let mut actions: Vec<Action> =
+                        self.shortcuts.keys().copied().collect();
+                    actions.sort_by_key(|a| a.name());
+                    ScrollArea::vertical()
+                        .max_height(340.0)
+                        .show(ui, |ui| {
+                            egui::Grid::new("shortcut_grid")
+                                .num_columns(3)
+                                .spacing([10.0, 6.0])
+                                .show(ui, |ui| {
+                                    for a in actions {
+                                        ui.label(tr(lang, a.label()));
+                                        if self.rebinding == Some(a) {
+                                            if ui
+                                                .button(tr(lang, "Naciśnij klawisz…"))
+                                                .clicked()
+                                            {
+                                                self.rebinding = None;
+                                            }
+                                        } else {
+                                            let txt = self
+                                                .shortcuts
+                                                .get(&a)
+                                                .and_then(|b| b.as_ref())
+                                                .map(|b| b.text())
+                                                .unwrap_or_else(|| {
+                                                    tr(lang, "— brak —").to_string()
+                                                });
+                                            if ui.button(txt).clicked() {
+                                                self.rebinding = Some(a);
+                                            }
+                                        }
+                                        if ui
+                                            .button("✖")
+                                            .on_hover_text(tr(lang, "Wyłącz skrót"))
+                                            .clicked()
+                                        {
+                                            self.shortcuts.insert(a, None);
+                                            self.save_prefs();
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                        });
+                    ui.separator();
+                    if ui.button(tr(lang, "Przywróć domyślne")).clicked() {
+                        self.shortcuts = default_bindings();
+                        self.rebinding = None;
+                        self.save_prefs();
+                    }
+                });
+            self.show_shortcuts_help = open;
+        }
     }
 }
 
 impl ForestApp {
-    fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
+    fn ui_toolbar(&mut self, ctx: &egui::Context) {
         let lang = self.lang;
-        ui.horizontal_wrapped(|ui| {
-            // 🌐 język
-            egui::ComboBox::from_id_source("lang_sel")
-                .selected_text(format!("🌐 {}", lang.name()))
-                .show_ui(ui, |ui| {
-                    for l in Lang::ALL {
-                        let selected = l == lang;
-                        if ui
-                            .selectable_label(selected, format!("🌐 {}", l.name()))
-                            .clicked()
-                            && !selected
-                        {
-                            self.lang = l;
-                            i18n::UiPrefs {
-                                language: l.code().into(),
+
+        // Toolbar — natywny titlebar Windows obsługuje przyciski okna
+        // i przeciąganie, więc zostaje tylko pasek narzędzi.
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                egui::ComboBox::from_id_source("lang_sel")
+                    .selected_text(format!("🌐 {}", lang.name()))
+                    .show_ui(ui, |ui| {
+                        for l in Lang::ALL {
+                            let selected = l == lang;
+                            if ui
+                                .selectable_label(selected, format!("🌐 {}", l.name()))
+                                .clicked()
+                                && !selected
+                            {
+                                self.lang = l;
+                                self.save_prefs();
                             }
-                            .save(i18n::PREFS_FILE);
                         }
+                    });
+                ui.separator();
+                ui.add_enabled(!self.busy, egui::Button::new(tr(lang, "▶ Generuj")))
+                    .on_hover_text(format!(
+                        "{}{}",
+                        tr(lang, "Generuj obiekty na mapie"),
+                        self.bind_hint(Action::Generate)
+                    ))
+                    .clicked()
+                    .then(|| self.start_generation(ui.ctx()));
+                ui.add_enabled(
+                    !self.objects.is_empty(),
+                    egui::Button::new(tr(lang, "💾 Eksport TXT (TB)")),
+                )
+                .on_hover_text(self.bind_hint(Action::ExportTxt))
+                .clicked()
+                .then(|| self.export_txt());
+                ui.add_enabled(
+                    !self.objects.is_empty(),
+                    egui::Button::new(tr(lang, "🖼 Eksport PNG (drzewa)")),
+                )
+                .on_hover_text(self.bind_hint(Action::ExportPng))
+                .clicked()
+                .then(|| self.export_trees_png());
+                ui.separator();
+                if ui
+                    .button(tr(lang, "📂 Wczytaj projekt"))
+                    .on_hover_text(self.bind_hint(Action::OpenProject))
+                    .clicked()
+                {
+                    self.load_project(ui.ctx());
+                }
+                if ui
+                    .button(tr(lang, "💾 Zapisz projekt"))
+                    .on_hover_text(self.bind_hint(Action::SaveProject))
+                    .clicked()
+                {
+                    self.save_project();
+                }
+                ui.separator();
+                if ui
+                    .add(egui::Button::new(if self.draw_mode {
+                        tr(lang, "✏ Rysowanie: WŁ")
+                    } else {
+                        tr(lang, "✏ Rysuj obszar")
+                    }))
+                    .on_hover_text(format!(
+                        "{}{}",
+                        tr(
+                            lang,
+                            "Klikaj wierzchołki na mapie (LPM), Enter = zakończ, Esc = anuluj"
+                        ),
+                        self.bind_hint(Action::DrawArea)
+                    ))
+                    .clicked()
+                {
+                    self.toggle_draw_mode();
+                }
+                if ui
+                    .add(egui::Button::new(if self.select_mode {
+                        tr(lang, "🎯 Zaznaczanie: WŁ")
+                    } else {
+                        tr(lang, "🎯 Zaznacz obszary")
+                    }))
+                    .on_hover_text(format!(
+                        "{}{}",
+                        tr(
+                            lang,
+                            "Kliknij obszar = przełącz zaznaczenie; przeciągnij = ramka zaznaczająca kilka naraz"
+                        ),
+                        self.bind_hint(Action::SelectAreas)
+                    ))
+                    .clicked()
+                {
+                    self.toggle_select_mode();
+                }
+                if self.select_mode && !self.selected_areas.is_empty() && ui
+                    .button("✖")
+                    .on_hover_text(tr(lang, "Wyczyść zaznaczenie"))
+                    .clicked()
+                {
+                    self.selected_areas.clear();
+                    self.show_only_selected = false;
+                }
+                if !self.draw_points.is_empty() {
+                    ui.colored_label(
+                        Color32::YELLOW,
+                        format!("{} {}", tr(self.lang, "pkt:"), self.draw_points.len()),
+                    );
+                    if ui.button("✔ Zakończ").clicked() {
+                        self.finish_area();
                     }
-                });
-            ui.separator();
-            ui.add_enabled(!self.busy, egui::Button::new(tr(lang, "▶ Generuj")))
-                .clicked()
-                .then(|| self.start_generation(ui.ctx()));
-            ui.add_enabled(
-                !self.objects.is_empty(),
-                egui::Button::new(tr(lang, "💾 Eksport TXT (TB)")),
-            )
-            .clicked()
-            .then(|| self.export_txt());
-            ui.add_enabled(
-                !self.objects.is_empty(),
-                egui::Button::new(tr(lang, "🖼 Eksport PNG (drzewa)")),
-            )
-            .clicked()
-            .then(|| self.export_trees_png());
-            ui.separator();
-            if ui.button(tr(lang, "📂 Wczytaj projekt")).clicked() {
-                self.load_project(ui.ctx());
-            }
-            if ui.button(tr(lang, "💾 Zapisz projekt")).clicked() {
-                self.save_project();
-            }
-            ui.separator();
-            // obszar powstaje "pusty" — presety przypisuje się w panelu Obszary
-            if ui
-                .add(egui::Button::new(if self.draw_mode {
-                    tr(lang, "✏ Rysowanie: WŁ")
-                } else {
-                    tr(lang, "✏ Rysuj obszar")
-                }))
-                .clicked()
-            {
-                self.draw_mode = !self.draw_mode;
-                if !self.draw_mode {
-                    self.draw_points.clear();
+                    if ui.button("⟲ Cofnij pkt").clicked() {
+                        self.draw_points.pop();
+                    }
+                    if ui.button("✖ Anuluj").clicked() {
+                        self.cancel_drawing();
+                    }
                 }
-            }
-            if !self.draw_points.is_empty() {
-                ui.colored_label(
-                    Color32::YELLOW,
-                    format!("{} {}", tr(self.lang, "pkt:"), self.draw_points.len()),
-                );
-                if ui.button("✔ Zakończ").clicked() {
-                    self.finish_area();
+                ui.separator();
+                ui.checkbox(&mut self.show_sat, tr(lang, "Podkład"));
+                ui.checkbox(&mut self.show_mask, tr(lang, "Maska"));
+                ui.checkbox(&mut self.show_trees, tr(lang, "Drzewa"));
+                if ui
+                    .button(tr(lang, "Dopasuj widok"))
+                    .on_hover_text(self.bind_hint(Action::FitView))
+                    .clicked()
+                {
+                    self.zoom = 1.0;
+                    self.pan = Vec2::ZERO;
                 }
-                if ui.button("⟲ Cofnij pkt").clicked() {
-                    self.draw_points.pop();
+                if ui
+                    .button("⌨")
+                    .on_hover_text(tr(
+                        lang,
+                        "Pomoc: skróty klawiszowe (podgląd i edycja przypisań)"
+                    ))
+                    .clicked()
+                {
+                    self.show_shortcuts_help = true;
                 }
-                if ui.button("✖ Anuluj").clicked() {
-                    self.cancel_drawing();
-                }
-            }
-            ui.separator();
-            ui.checkbox(&mut self.show_sat, tr(lang, "Podkład"));
-            ui.checkbox(&mut self.show_mask, tr(lang, "Maska"));
-            ui.checkbox(&mut self.show_trees, tr(lang, "Drzewa"));
-            if ui.button(tr(lang, "Dopasuj widok")).clicked() {
-                self.zoom = 1.0;
-                self.pan = Vec2::ZERO;
-            }
+            });
         });
-        ui.separator();
     }
 
     fn ui_params(&mut self, ui: &mut egui::Ui) {
@@ -1700,7 +2496,7 @@ impl ForestApp {
             .show(ui, |ui| {
                 let d_edges = EdgeSettings::default();
                 let species_snap = self.project.species.clone();
-                ui_edge_settings(ui, self.lang, &mut self.project.edges, &d_edges, &species_snap);
+                ui_edge_settings(ui, self.lang, "G", &mut self.project.edges, &d_edges, &species_snap);
             });
 
         // Wycinanie po kolorach maski (+ bufor) — usuwa wygenerowane obiekty
@@ -1906,6 +2702,15 @@ impl ForestApp {
                     }
                 });
                 ui.separator();
+                // szukajka gatunków
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.species_search)
+                            .desired_width(170.0)
+                            .hint_text(tr(lang, "Szukaj gatunku / modelu...")),
+                    );
+                });
                 let mut remove: Option<usize> = None;
                 // posortowane indeksy dla poprawnego grupowania (Iglaste/Liściaste/Krzewy + DLC)
                 let mut indices: Vec<usize> = (0..self.project.species.len()).collect();
@@ -1926,6 +2731,15 @@ impl ForestApp {
                         .then_with(|| ga.cmp(gb))
                         .then_with(|| self.project.species[a].label.cmp(&self.project.species[b].label))
                 });
+                // filtr szukajki: etykieta albo model
+                let q_sp = self.species_search.trim().to_lowercase();
+                if !q_sp.is_empty() {
+                    indices.retain(|&i| {
+                        let s = &self.project.species[i];
+                        s.label.to_lowercase().contains(&q_sp)
+                            || s.model.to_lowercase().contains(&q_sp)
+                    });
+                }
                 let mut last_group = String::new();
                 for idx in indices {
                     let i = idx;
@@ -2112,6 +2926,12 @@ ui.text_edit_singleline(&mut sp.label);
             .show(ui, |ui| {
                 // --- presety roślinności (pogrupowane) ----------------------
                 ui.small(tr(lang, "Dodaj strefę z presetu (⊕ kopiuje do \"Moje presety\"):"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.zone_preset_search)
+                        .hint_text(tr(lang, "🔍 Szukaj presetu..."))
+                        .desired_width(200.0),
+                );
+                let q_zp = self.zone_preset_search.trim().to_lowercase();
                 let presets = forest_core::species::zone_presets();
                 let mut last_group = "";
                 ScrollArea::vertical()
@@ -2119,6 +2939,12 @@ ui.text_edit_singleline(&mut sp.label);
                     .id_source("zone_presets")
                     .show(ui, |ui| {
                         for p in presets.iter() {
+                            if !q_zp.is_empty()
+                                && !tr(lang, p.name).to_lowercase().contains(&q_zp)
+                                && !p.group.to_lowercase().contains(&q_zp)
+                            {
+                                continue;
+                            }
                             if p.group != last_group {
                                 ui.separator();
                                 ui.strong(tr(lang, p.group));
@@ -2574,7 +3400,84 @@ ui.text_edit_singleline(&mut sp.label);
                     lang,
                     "Rysowane na mapie: wybierz preset na pasku → ✏ Rysuj obszar → klikaj wierzchołki (LPM), Enter/dwuklik = zakończ.",
                 ));
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(tr(lang, "📥 SHP"))
+                        .on_hover_text(tr(
+                            lang,
+                            "Wczytaj poligony z Shapefile (.shp) — tylko geometria; atrybuty .dbf są ignorowane",
+                        ))
+                        .clicked()
+                    {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("Shapefile", &["shp"])
+                            .pick_file()
+                        {
+                            self.load_shp_areas(&p.to_string_lossy());
+                        }
+                    }
+                    if ui
+                        .button(tr(lang, "📥 GeoJSON"))
+                        .on_hover_text(tr(
+                            lang,
+                            "Wczytaj poligony z pliku .geojson (etykieta/gęstość z properties, jeśli są)",
+                        ))
+                        .clicked()
+                    {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter("GeoJSON", &["geojson", "json"])
+                            .pick_file()
+                        {
+                            self.load_geojson_areas(&p.to_string_lossy());
+                        }
+                    }
+                    if ui
+                        .button(tr(lang, "📤 GeoJSON"))
+                        .on_hover_text(tr(
+                            lang,
+                            "Zapisz poligony (z dziurami) jako .geojson w układzie mapy (offset TB dodany ponownie)",
+                        ))
+                        .clicked()
+                    {
+                        self.export_areas();
+                    }
+                });
                 ui.separator();
+                // szukajka + filtr zaznaczonych
+                ui.horizontal(|ui| {
+                    ui.label("🔍");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.area_search)
+                            .desired_width(150.0)
+                            .hint_text(tr(lang, "Szukaj obszaru...")),
+                    );
+                    let n_sel = self.selected_areas.len();
+                    if n_sel > 0 {
+                        if ui
+                            .add(egui::Checkbox::new(
+                                &mut self.show_only_selected,
+                                tf(
+                                    lang,
+                                    "Tylko zaznaczone ({0})",
+                                    &[&n_sel.to_string()],
+                                ),
+                            ))
+                            .changed()
+                            && !self.show_only_selected
+                            && self.selected_areas.is_empty()
+                        {
+                            self.show_only_selected = false;
+                        }
+                        if ui
+                            .button("✖")
+                            .on_hover_text(tr(lang, "Wyczyść zaznaczenie"))
+                            .clicked()
+                        {
+                            self.selected_areas.clear();
+                            self.show_only_selected = false;
+                        }
+                    }
+                });
                 let mut to_remove: Option<usize> = None;
                 let species_snap_a = self.project.species.clone();
                 let global_edges_snap = self.project.edges.clone();
@@ -2589,7 +3492,17 @@ ui.text_edit_singleline(&mut sp.label);
                 let area_labels: Vec<String> =
                     self.project.areas.iter().map(|ar| ar.label.clone()).collect();
                 let mut pending_copy: Option<(usize, usize)> = None;
+                // filtry listy: zaznaczone + szukajka
+                let sel_filter_active =
+                    self.show_only_selected && !self.selected_areas.is_empty();
+                let q_area = self.area_search.trim().to_lowercase();
                 for (ai, a) in self.project.areas.iter_mut().enumerate() {
+                    if sel_filter_active && !self.selected_areas.contains(&ai) {
+                        continue;
+                    }
+                    if !q_area.is_empty() && !a.label.to_lowercase().contains(&q_area) {
+                        continue;
+                    }
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             let col = [Color32::from_rgb(255, 170, 40), Color32::from_rgb(60, 210, 255)][ai % 2];
@@ -2611,6 +3524,7 @@ ui.text_edit_singleline(&mut sp.label);
                                     self.editing_vertex = None;
                                     self.draw_mode = false;
                                     self.draw_points.clear();
+                                    self.select_mode = false;
                                 }
                             }
                             if ui.button("✖").on_hover_text(tr(lang, "Usuń obszar")).clicked() {
@@ -2625,20 +3539,23 @@ ui.text_edit_singleline(&mut sp.label);
                                     .and_then(|idx| area_labels.get(idx))
                                     .cloned()
                                     .unwrap_or_else(|| tr(lang, "— wybierz —"));
-                                egui::ComboBox::from_id_source(format!("copy_src{ai}"))
-                                    .selected_text(sel_text)
-                                    .width(140.0)
-                                    .show_ui(ui, |ui| {
-                                        for (j, label) in area_labels.iter().enumerate() {
-                                            if j == ai {
-                                                continue;
-                                            }
-                                            let is_selected = self.area_copy_src[ai] == Some(j);
-                                            if ui.selectable_label(is_selected, label).clicked() {
-                                                self.area_copy_src[ai] = Some(j);
-                                            }
+                                searchable_combo(
+                                    ui,
+                                    lang,
+                                    &format!("copy_src{ai}"),
+                                    sel_text,
+                                    140.0,
+                                    &area_labels,
+                                    |ui, j| {
+                                        if j == ai {
+                                            return;
                                         }
-                                    });
+                                        let is_selected = self.area_copy_src[ai] == Some(j);
+                                        if ui.selectable_label(is_selected, area_labels[j].clone()).clicked() {
+                                            self.area_copy_src[ai] = Some(j);
+                                        }
+                                    },
+                                );
                                 let can_copy = self.area_copy_src[ai].is_some_and(|src| {
                                     src < area_labels.len() && src != ai
                                 });
@@ -2828,7 +3745,7 @@ ui.text_edit_singleline(&mut sp.label);
                             Some(ge) => {
                                 ui.indent(format!("aedge{ai}"), |ui| {
                                     ui.small("⟲ przywraca wartości z globalnej granicy");
-                                    ui_edge_settings(ui, self.lang, ge, &global_edges_snap, &species_snap_a);
+                                    ui_edge_settings(ui, self.lang, &format!("A{ai}"), ge, &global_edges_snap, &species_snap_a);
                                 });
                             }
                             None => {
@@ -2896,6 +3813,22 @@ ui.text_edit_singleline(&mut sp.label);
                             self.editing_area = Some(ea - 1);
                         }
                     }
+                    // zaznaczenia: usuń wpis i przesuń wyższe indeksy
+                    self.selected_areas.remove(&i);
+                    let shifted: Vec<usize> = self
+                        .selected_areas
+                        .iter()
+                        .filter(|&&s| s > i)
+                        .map(|&s| s - 1)
+                        .collect();
+                    for s in shifted {
+                        self.selected_areas.remove(&(s + 1));
+                        self.selected_areas.insert(s);
+                    }
+                    if self.selected_areas.is_empty() {
+                        self.show_only_selected = false;
+                    }
+                    self.refresh_intersection_marks();
                 }
                 if !self.project.areas.is_empty()
                     && ui.button(tr(lang, "Wyczyść wszystkie obszary")).clicked()
@@ -2905,6 +3838,9 @@ ui.text_edit_singleline(&mut sp.label);
                     self.editing_area = None;
                     self.editing_vertex = None;
                     self.sampling_area = None;
+                    self.intersection_marks.clear();
+                    self.selected_areas.clear();
+                    self.show_only_selected = false;
                 }
             });
 
@@ -2935,9 +3871,13 @@ ui.text_edit_singleline(&mut sp.label);
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
 
         // interakcja: pan + zoom do kursora
-        // (w edycji wierzchołka drag przesuwa wierzchołek, nie panuje)
+        // (w edycji wierzchołka drag przesuwa wierzchołek, nie panuje;
+        //  w trybie zaznaczania LMB-drag to ramka zaznaczania)
         let editing_vertex_active = self.editing_area.is_some() && self.editing_vertex.is_some();
+        let rubber_band_active =
+            self.select_mode && resp.dragged_by(PointerButton::Primary);
         if !editing_vertex_active
+            && !rubber_band_active
             && (resp.dragged_by(PointerButton::Primary) || resp.dragged_by(PointerButton::Secondary))
         {
             self.pan += resp.drag_delta();
@@ -3017,6 +3957,84 @@ ui.text_edit_singleline(&mut sp.label);
             }
         }
 
+        // zaznaczanie obszarów: klik = przełącz, ramka = zaznacz wszystkie w prostokącie
+        if self.select_mode {
+            if resp.drag_started_by(PointerButton::Primary) {
+                self.select_drag_start = resp.hover_pos();
+            }
+            if resp.clicked_by(PointerButton::Primary) {
+                if let Some(hover) = resp.hover_pos() {
+                    let wx = ((hover.x - origin.x) / scale).clamp(0.0, map as f32) as f64;
+                    let wy =
+                        ((map as f32) - ((hover.y - origin.y) / scale)).clamp(0.0, map as f32)
+                            as f64;
+                    match area_at_point(&self.project.areas, wx, wy) {
+                        Some(ai) => {
+                            // kliknięty obszar: był zaznaczony -> odznacz,
+                            // nie był -> zaznacz (pierwsze zaznaczenie włącza filtr)
+                            if self.selected_areas.remove(&ai) {
+                                if self.selected_areas.is_empty() {
+                                    self.show_only_selected = false;
+                                }
+                            } else {
+                                let first = self.selected_areas.is_empty();
+                                self.selected_areas.insert(ai);
+                                if first {
+                                    self.show_only_selected = true;
+                                }
+                            }
+                        }
+                        None => {
+                            self.selected_areas.clear();
+                            self.show_only_selected = false;
+                        }
+                    }
+                }
+            }
+            if resp.drag_stopped() {
+                if let (Some(start), Some(end)) = (self.select_drag_start, resp.hover_pos()) {
+                    let x0 = start.x.min(end.x);
+                    let x1 = start.x.max(end.x);
+                    let y0 = start.y.min(end.y);
+                    let y1 = start.y.max(end.y);
+                    // zignoruj mikroramki (to było kliknięcie, nie zaznaczanie)
+                    if (x1 - x0) > 6.0 || (y1 - y0) > 6.0 {
+                        let mapf32 = map as f32;
+                        let to_world = |sx: f32, sy: f32| -> (f64, f64) {
+                            (
+                                (((sx - origin.x) / scale).clamp(0.0, mapf32)) as f64,
+                                ((mapf32 - ((sy - origin.y) / scale)).clamp(0.0, mapf32)) as f64,
+                            )
+                        };
+                        let (w0x, w1y_top) = to_world(x0, y0);
+                        let (w1x, w0y_top) = to_world(x1, y1);
+                        let (rmin_x, rmax_x) = (w0x.min(w1x), w0x.max(w1x));
+                        let (rmin_y, rmax_y) = (w0y_top.max(w1y_top), w0y_top.min(w1y_top));
+                        for (ai, a) in self.project.areas.iter().enumerate() {
+                            if a.polygon.is_empty() {
+                                continue;
+                            }
+                            let (bx0, by0, bx1, by1) = poly_bbox(&a.polygon);
+                            let hit =
+                                bx0 <= rmax_x && bx1 >= rmin_x && by0 <= rmax_y && by1 >= rmin_y;
+                            if hit {
+                                self.selected_areas.insert(ai);
+                            }
+                        }
+                        if !self.selected_areas.is_empty() {
+                            self.show_only_selected = true;
+                        }
+                    }
+                }
+                self.select_drag_start = None;
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.select_drag_start = None;
+                self.selected_areas.clear();
+                self.show_only_selected = false;
+            }
+        }
+
         // edycja istniejącego obszaru: przesuwanie/dodawanie/usuwanie wierzchołków
         if let Some(ai) = self.editing_area {
             let n_pts = self.project.areas.get(ai).map(|a| a.polygon.len());
@@ -3051,6 +4069,13 @@ ui.text_edit_singleline(&mut sp.label);
                             }
                         }
                     }
+                }
+                // koniec przeciągania -> odśwież znaczniki przecięć
+                if resp.drag_stopped()
+                    && self.editing_vertex.is_some()
+                    && ai < self.project.areas.len()
+                {
+                    self.refresh_intersection_marks();
                 }
                 // klik bez przeciągnięcia: wybierz wierzchołek albo dodaj na odcinku
                 if resp.clicked_by(PointerButton::Primary) {
@@ -3122,6 +4147,7 @@ ui.text_edit_singleline(&mut sp.label);
                 if esc || enter {
                     self.editing_area = None;
                     self.editing_vertex = None;
+                    self.refresh_intersection_marks();
                 }
             }
         }
@@ -3243,12 +4269,32 @@ ui.text_edit_singleline(&mut sp.label);
             let mut pts: Vec<egui::Pos2> =
                 a.polygon.iter().map(|c| to_screen(c[0], c[1])).collect();
             pts.push(pts[0]); // domknięcie
+            // zaznaczony obszar: biała poświata pod linią
+            if self.selected_areas.contains(&ai) {
+                painter.add(egui::Shape::line(
+                    pts.clone(),
+                    egui::Stroke::new(5.0_f32, Color32::WHITE.gamma_multiply(0.8)),
+                ));
+            }
             painter.add(egui::Shape::line(
                 pts.clone(),
                 egui::Stroke::new(2.0_f32, col),
             ));
             for p in &pts[..pts.len() - 1] {
                 painter.circle_filled(*p, 3.0, col);
+            }
+            // dziury (wycięcia) — import SHP
+            for hole in &a.holes {
+                if hole.len() < 3 {
+                    continue;
+                }
+                let mut hpts: Vec<egui::Pos2> =
+                    hole.iter().map(|c| to_screen(c[0], c[1])).collect();
+                hpts.push(hpts[0]);
+                painter.add(egui::Shape::line(
+                    hpts,
+                    egui::Stroke::new(1.5_f32, col.gamma_multiply(0.55)),
+                ));
             }
             // etykieta w środku ciężkości obrysu
             let cx = a.polygon.iter().map(|p| p[0]).sum::<f64>() / a.polygon.len() as f64;
@@ -3292,6 +4338,16 @@ ui.text_edit_singleline(&mut sp.label);
             }
         }
 
+        // czerwone znaczniki samoprzecięć obszarów (import/edycja)
+        if !self.intersection_marks.is_empty() {
+            for &(ai, _hole, pt) in &self.intersection_marks {
+                if ai >= self.project.areas.len() {
+                    continue; // nieaktualny indeks (obszar usunięty) — zignoruj
+                }
+                draw_intersection_marker(&painter, to_screen(pt[0], pt[1]));
+            }
+        }
+
         // szkic rysowanego właśnie poligonu
         if !self.draw_points.is_empty() {
             let yellow = Color32::YELLOW;
@@ -3308,6 +4364,10 @@ ui.text_edit_singleline(&mut sp.label);
             for p in &pts {
                 painter.circle_filled(*p, 3.5, yellow);
             }
+            // na żywo: znacznik samoprzecięcia rysowanego obrysu
+            if let Some(ix) = forest_core::scatter::find_self_intersection(&self.draw_points) {
+                draw_intersection_marker(&painter, to_screen(ix.point[0], ix.point[1]));
+            }
             if let Some(hover) = resp.hover_pos() {
                 if let Some(last) = pts.last() {
                     painter.line_segment(
@@ -3315,6 +4375,22 @@ ui.text_edit_singleline(&mut sp.label);
                         egui::Stroke::new(1.0_f32, yellow.gamma_multiply(0.4)),
                     );
                 }
+            }
+        }
+
+        // ramka zaznaczania (🎯)
+        if let (Some(start), Some(hover)) = (self.select_drag_start, resp.hover_pos()) {
+            if self.select_mode && resp.dragged_by(PointerButton::Primary) {
+                painter.rect_stroke(
+                    Rect::from_two_pos(start, hover),
+                    0.0,
+                    egui::Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 120)),
+                );
+                painter.rect_filled(
+                    Rect::from_two_pos(start, hover),
+                    0.0,
+                    Color32::from_rgba_premultiplied(120, 220, 120, 28),
+                );
             }
         }
 
@@ -3340,6 +4416,55 @@ fn canvas_origin(rect: Rect, map: f64, scale: f32, pan: Vec2) -> egui::Vec2 {
         rect.min.x + (rect.size().x - map as f32 * scale) / 2.0 + pan.x,
         rect.min.y + (rect.size().y - map as f32 * scale) / 2.0 + pan.y,
     )
+}
+
+/// Czerwony krzyżyk w kółku — znacznik miejsca samoprzecięcia obrysu.
+fn draw_intersection_marker(painter: &egui::Painter, p: egui::Pos2) {
+    let red = Color32::from_rgb(255, 30, 30);
+    let white = Color32::WHITE;
+    painter.circle_filled(p, 8.0, red);
+    painter.circle_stroke(p, 8.0, egui::Stroke::new(2.0_f32, white));
+    let d = 4.5_f32;
+    painter.line_segment(
+        [egui::pos2(p.x - d, p.y - d), egui::pos2(p.x + d, p.y + d)],
+        egui::Stroke::new(2.5_f32, white),
+    );
+    painter.line_segment(
+        [egui::pos2(p.x - d, p.y + d), egui::pos2(p.x + d, p.y - d)],
+        egui::Stroke::new(2.5_f32, white),
+    );
+}
+
+/// Najwyższy obszar zawierający punkt (x, y) — dziury wykluczają.
+fn area_at_point(areas: &[forest_core::preset::AreaDef], x: f64, y: f64) -> Option<usize> {
+    for (ai, a) in areas.iter().enumerate().rev() {
+        if a.polygon.len() < 3 {
+            continue;
+        }
+        let mut rings = vec![a.polygon.clone()];
+        rings.extend(a.holes.iter().filter(|h| h.len() >= 3).cloned());
+        if forest_core::geojson::point_in_polygon(
+            &forest_core::geojson::Polygon { rings },
+            x,
+            y,
+        ) {
+            return Some(ai);
+        }
+    }
+    None
+}
+
+/// Bounding box pierścienia (x0, y0, x1, y1).
+fn poly_bbox(ring: &[[f64; 2]]) -> (f64, f64, f64, f64) {
+    let first = ring.first().copied().unwrap_or([0.0, 0.0]);
+    let (mut x0, mut y0, mut x1, mut y1) = (first[0], first[1], first[0], first[1]);
+    for p in ring {
+        x0 = x0.min(p[0]);
+        y0 = y0.min(p[1]);
+        x1 = x1.max(p[0]);
+        y1 = y1.max(p[1]);
+    }
+    (x0, y0, x1, y1)
 }
 
 /// Twardy clamp widoku: mapa mniejsza od kanwy jest wycentrowana (pan = 0),

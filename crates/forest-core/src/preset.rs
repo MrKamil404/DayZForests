@@ -78,6 +78,10 @@ pub struct AreaDef {
     pub species_weights: Vec<(usize, f32)>,
     /// Pierścień poligonu, >= 3 punkty.
     pub polygon: Vec<[f64; 2]>,
+    /// Dziury poligonu (wycięcia) — pierścienie >= 3 punkty. Obiekty nie są
+    /// generowane wewnątrz dziur (import SHP z wieloczęściowymi poligonami).
+    #[serde(default)]
+    pub holes: Vec<Vec<[f64; 2]>>,
     /// Miks presetów jak w ZoneDef.
     #[serde(default)]
     pub preset_mix: Vec<(String, f32)>,
@@ -263,6 +267,7 @@ impl ForestProject {
             if !a.species_weights.is_empty() {
                 a.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
             }
+            a.holes.retain(|h| h.len() >= 3);
         }
         self.areas.retain(|a| a.polygon.len() >= 3);
         if self.edges.enabled {
@@ -310,12 +315,35 @@ impl ForestProject {
                     return Err(format!("Obszar {}: punkt {pi} ma nieprawidłowe współrzędne", ai + 1));
                 }
             }
-            if crate::scatter::polygon_self_intersects(&a.polygon) {
+            if let Some(ix) = crate::scatter::find_self_intersection(&a.polygon) {
                 return Err(format!(
-                    "Obszar '{}' przecina sam siebie — odcinki obrysu się krzyżują. \
-                     Popraw lub usuń wierzchołki tak, aby obrys był prostym wielokątem.",
-                    a.label
+                    "Obszar '{}': obrys przecina sam siebie — odcinki #{}–#{} i #{}–#{} \
+                     krzyżują się w punkcie ({:.1}, {:.1}). Zobacz czerwony znacznik na mapie; \
+                     usuń lub przesuń wierzchołki tak, aby obrys był prostym wielokątem.",
+                    a.label,
+                    ix.seg_a,
+                    ix.seg_a + 1,
+                    ix.seg_b,
+                    ix.seg_b + 1,
+                    ix.point[0],
+                    ix.point[1]
                 ));
+            }
+            for (hi, hole) in a.holes.iter().enumerate() {
+                if let Some(ix) = crate::scatter::find_self_intersection(hole) {
+                    return Err(format!(
+                        "Obszar '{}': dziura {} przecina samą siebie — odcinki #{}–#{} i #{}–#{} \
+                         krzyżują się w punkcie ({:.1}, {:.1}). Popraw obrys dziury.",
+                        a.label,
+                        hi + 1,
+                        ix.seg_a,
+                        ix.seg_a + 1,
+                        ix.seg_b,
+                        ix.seg_b + 1,
+                        ix.point[0],
+                        ix.point[1]
+                    ));
+                }
             }
             if a.density_per_ha <= 0.0 {
                 return Err(format!("Obszar '{}': gęstość musi być > 0", a.label));

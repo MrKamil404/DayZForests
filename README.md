@@ -60,6 +60,10 @@ moje presety, obszary, wynik generowania ze statystyką per źródło).
    klikaj wierzchołki LPM na mapie (Enter/dwuklik = zakończ, Esc = anuluj,
    Backspace = cofnij punkt). Obrys **nie może przecinać samego siebie** —
    generator odmówi z opisem. Można generować wyłącznie z poligonów, bez maski.
+   Można też **📥 importować poligony z Shapefile (`.shp`)** — każdy poligon
+   staje się osobnym obszarem (dziury/wycięcia są zachowane; atrybuty `.dbf`
+   nie są importowane). Współrzędne w układzie TB (easting ≥ 100 000) są
+   automatycznie normalizowane.
    **Edycja obszaru:** w 📐 Obszary kliknij **✏**, potem na mapie: przeciągnij
    biały uchwyt = przesuń wierzchołek, kliknij zielony punkt (środek krawędzi)
    = dodaj wierzchołek, Backspace = usuń wybrany, Esc/Enter/dwuklik = koniec.
@@ -174,5 +178,5 @@ cargo test -p forest-core
 
 - Limit bezpieczeństwa: 2 000 000 obiektów na jedno generowanie.
 - Pliki wyjściowe >100 MB są normalne dla gęstych lasów mapowych.
-- Współrzędne GeoJSON: metry mapy, origin SW; offset easting jest usuwany
-  automatycznie, gdy maks. X > 100 000.
+- Współrzędne GeoJSON i Shapefile (`.shp`): metry mapy, origin SW; offset
+  easting jest usuwany automatycznie, gdy maks. X > 100 000.
