@@ -210,6 +210,75 @@ pub struct ForestProject {
 
     #[serde(default)]
     pub paths: ProjectPaths,
+
+    /// Zaimportowane warstwy z `layers.cfg` (nazwa → kolor RGB).
+    /// Używane do eksportu PNG z kolorami warstw zamiast kolorów gatunków.
+    #[serde(default)]
+    pub layer_library: crate::layers::LayerLibrary,
+
+    /// Ustawienia eksportu PNG (rozmiar i kształt kropek).
+    #[serde(default)]
+    pub png_settings: PngSettings,
+}
+
+/// Tryb renderowania PNG.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PngMode {
+    /// Małe kropki dla każdego drzewa (tryb drzew).
+    Trees,
+    /// Duże kolorowe plamy reprezentujące strefy lasu (tryb stref).
+    Zones,
+    /// Identyczny rendering jak podgląd w programie (koło 2px, bez randomizacji).
+    Preview,
+}
+
+impl Default for PngMode {
+    fn default() -> Self {
+        Self::Trees
+    }
+}
+
+/// Kształt kropki w eksporcie PNG.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PngShape {
+    Circle,
+    Square,
+    Diamond,
+    Blob,
+}
+
+impl Default for PngShape {
+    fn default() -> Self {
+        Self::Diamond
+    }
+}
+
+/// Ustawienia renderowania kropek w eksporcie PNG.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PngSettings {
+    /// Tryb renderowania (drzewa vs strefy).
+    pub mode: PngMode,
+    /// Rozmiar kropki w metrach (domyślnie 1.5m) - tylko dla trybu Trees.
+    pub dot_size_m: f64,
+    /// Kształt kropki - tylko dla trybu Trees.
+    pub shape: PngShape,
+    /// Randomizacja rozmiaru (0.0 = brak, 0.5 = ±50%) - tylko dla trybu Trees.
+    pub randomize_size: f64,
+    /// Randomizacja rotacji (dla Square/Diamond) - tylko dla trybu Trees.
+    pub randomize_rotation: bool,
+}
+
+impl Default for PngSettings {
+    fn default() -> Self {
+        Self {
+            mode: PngMode::Trees,
+            dot_size_m: 3.2,
+            shape: PngShape::Blob,
+            randomize_size: 0.35,
+            randomize_rotation: false,
+        }
+    }
 }
 
 impl Default for ForestProject {
@@ -238,6 +307,8 @@ impl Default for ForestProject {
             areas: Vec::new(),
             edges: EdgeSettings::default(),
             paths: ProjectPaths::default(),
+            layer_library: crate::layers::LayerLibrary::default(),
+            png_settings: PngSettings::default(),
         }
     }
 }

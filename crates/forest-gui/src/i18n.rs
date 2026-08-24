@@ -915,6 +915,33 @@ const DICT: &[Entry] = &[
     ("Cofnij punkt", "Undo point", "Punkt rückgängig"),
     ("Anuluj", "Cancel", "Abbrechen"),
     ("Wyczyść zaznaczenie", "Clear selection", "Auswahl löschen"),
+    // --- warstwy (layers.cfg) ---
+    ("Warstwy (layers.cfg)", "Layers (layers.cfg)", "Ebenen (layers.cfg)"),
+    ("Importuj layers.cfg aby użyć kolorów warstw przy eksporcie PNG.", "Import layers.cfg to use layer colors in PNG export.", "layers.cfg importieren, um Ebenenfarben im PNG-Export zu verwenden."),
+    ("Importuj layers.cfg...", "Import layers.cfg...", "layers.cfg importieren..."),
+    ("Zaimportowano {0} warstw z layers.cfg", "Imported {0} layers from layers.cfg", "{0} Ebenen aus layers.cfg importiert"),
+    ("Brak zaimportowanych warstw.", "No imported layers.", "Keine importierten Ebenen."),
+    ("{0} warstw", "{0} layers", "{0} Ebenen"),
+    ("Przypisz warstwy do grup gatunków:", "Assign layers to species groups:", "Ebenen Artengruppen zuweisen:"),
+    ("— wybierz —", "— select —", "— auswählen —"),
+    ("Zastosuj grupy do gatunków", "Apply groups to species", "Gruppen auf Arten anwenden"),
+    ("Przypisano warstwy do gatunków wg grup", "Assigned layers to species by groups", "Ebenen nach Gruppen den Arten zugewiesen"),
+    ("Warstwy:", "Layers:", "Ebenen:"),
+    ("Eksport PNG (warstwy)", "Export PNG (layers)", "PNG-Export (Ebenen)"),
+    // --- ustawienia PNG ---
+    ("Ustawienia PNG", "PNG settings", "PNG-Einstellungen"),
+    ("Tryb:", "Mode:", "Modus:"),
+    ("Drzewa", "Trees", "Bäume"),
+    ("Strefy", "Zones", "Zonen"),
+    ("Podgląd", "Preview", "Vorschau"),
+    ("Rozmiar kropki [m]:", "Dot size [m]:", "Punktgröße [m]:"),
+    ("Kształt:", "Shape:", "Form:"),
+    ("Koło", "Circle", "Kreis"),
+    ("Kwadrat", "Square", "Quadrat"),
+    ("Romb", "Diamond", "Raute"),
+    ("Plama", "Blob", "Klecks"),
+    ("Randomizacja rozmiaru:", "Size randomization:", "Größenrandomisierung:"),
+    ("Randomizacja rotacji", "Rotation randomization", "Rotationsrandomisierung"),
 ];
 
 /// Tłumaczy tekst źródłowy (PL). Brak wpisu -> zwraca oryginał.

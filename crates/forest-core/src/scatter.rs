@@ -1402,7 +1402,7 @@ fn grid_has_neighbor(
 // --- Szum wartościowy (polany) ---------------------------------------------
 
 #[inline]
-fn hash2(ix: f64, iy: f64, seed: u64) -> f64 {
+pub fn hash2(ix: f64, iy: f64, seed: u64) -> f64 {
     let mut h = ix
         .to_bits()
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)

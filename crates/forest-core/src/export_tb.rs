@@ -8,8 +8,24 @@
 
 use std::io::Write;
 
-use crate::preset::ForestProject;
-use crate::scatter::PlacedObject;
+use crate::mask::MaskImage;
+use crate::preset::{ForestProject, PngMode, PngShape};
+use crate::scatter::{hash2, PlacedObject};
+
+/// Wzorzec dysku (koła) do rysowania obiektów - identyczny jak w podglądzie.
+fn dot_stencil(radius: f32) -> Vec<(i64, i64)> {
+    let ri = radius.ceil() as i64;
+    let r2 = radius * radius;
+    let mut v = Vec::new();
+    for dy in -ri..=ri {
+        for dx in -ri..=ri {
+            if ((dx * dx + dy * dy) as f32) <= r2 + 0.25 {
+                v.push((dx, dy));
+            }
+        }
+    }
+    v
+}
 
 pub fn write_tb_txt(
     objects: &[PlacedObject],
@@ -63,19 +79,89 @@ pub fn export_trees_png(
     let sx = f64::from(res) / map;
     let sy = f64::from(res) / map;
 
-    // promień punktu ~1.5 px, nie mniejszy niż 1
-    let r = ((res as f64 / map) * 1.5).round().max(1.0);
-    let ri = r.ceil() as i64;
-    let r2 = r * r;
+    // Tryb Preview: identyczny rendering jak podgląd w programie (koło 2px)
+    if project.png_settings.mode == PngMode::Preview {
+        let stencil = dot_stencil(2.0);
+        let mut drawn: u32 = 0;
+        for o in objects {
+            let px = (o.x * sx) as i64;
+            let py = ((map - o.y) * sy) as i64;
+            let c = colors.get(o.species_index).copied().unwrap_or([255, 255, 255]);
+            for &(dx, dy) in &stencil {
+                let x = px + dx;
+                let y = py + dy;
+                if x >= 0 && y >= 0 && (x as u32) < res && (y as u32) < res {
+                    let idx = ((y as usize) * (res as usize) + (x as usize)) * 4;
+                    rgba[idx] = c[0];
+                    rgba[idx + 1] = c[1];
+                    rgba[idx + 2] = c[2];
+                    rgba[idx + 3] = 255;
+                }
+            }
+            drawn += 1;
+        }
+        image::save_buffer(path, &rgba, res, res, image::ColorType::Rgba8)
+            .map_err(|e| format!("Zapis PNG: {e}"))?;
+        return Ok(drawn);
+    }
 
+    let base_r = (project.png_settings.dot_size_m * sx).max(1.0);
     let mut drawn: u32 = 0;
+
     for o in objects {
         let px = (o.x * sx) as i64;
         let py = ((map - o.y) * sy) as i64;
         let c = colors.get(o.species_index).copied().unwrap_or([255, 255, 255]);
+
+        // randomizacja rozmiaru
+        let size_mult = if project.png_settings.randomize_size > 0.0 {
+            let rng = hash2(o.x, o.y, project.seed);
+            1.0 + (rng - 0.5) * 2.0 * project.png_settings.randomize_size
+        } else {
+            1.0
+        };
+        let r = (base_r * size_mult).max(0.5);
+        let ri = r.ceil() as i64;
+
+        // randomizacja rotacji (dla Square/Diamond)
+        let angle = if project.png_settings.randomize_rotation {
+            let rng = hash2(o.x + 1000.0, o.y + 1000.0, project.seed);
+            rng * std::f64::consts::TAU
+        } else {
+            match project.png_settings.shape {
+                PngShape::Diamond => std::f64::consts::FRAC_PI_4,
+                _ => 0.0,
+            }
+        };
+
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+
         for dy in -ri..=ri {
             for dx in -ri..=ri {
-                if ((dx * dx + dy * dy) as f64) <= r2 + 0.25 {
+                // obróć punkt
+                let rx = dx as f64 * cos_a - dy as f64 * sin_a;
+                let ry = dx as f64 * sin_a + dy as f64 * cos_a;
+
+                let inside = match project.png_settings.shape {
+                    PngShape::Circle => (rx * rx + ry * ry) <= r * r,
+                    PngShape::Square => rx.abs() <= r && ry.abs() <= r,
+                    PngShape::Diamond => rx.abs() + ry.abs() <= r,
+                    PngShape::Blob => {
+                        let dist = (rx * rx + ry * ry).sqrt();
+                        // nieregularna plama - promień zależny od kąta
+                        let angle = ry.atan2(rx);
+                        let phase1 = hash2(o.x + 11.0, o.y + 17.0, project.seed) * std::f64::consts::TAU;
+                        let phase2 = hash2(o.x + 91.0, o.y + 33.0, project.seed) * std::f64::consts::TAU;
+                        let wobble = 0.30 * (angle * 3.0 + phase1).sin()
+                            + 0.18 * (angle * 5.0 + phase2).cos()
+                            + 0.12 * (angle * 7.0 - phase1 * 0.5).sin();
+                        let r_eff = r * (1.0 + wobble).clamp(0.65, 1.35);
+                        dist <= r_eff
+                    }
+                };
+
+                if inside {
                     let x = px + dx;
                     let y = py + dy;
                     if x >= 0 && y >= 0 && (x as u32) < res && (y as u32) < res {
@@ -89,6 +175,256 @@ pub fn export_trees_png(
             }
         }
         drawn += 1;
+    }
+
+    image::save_buffer(
+        path,
+        &rgba,
+        res,
+        res,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|e| format!("Zapis PNG: {e}"))?;
+    Ok(drawn)
+}
+
+/// Eksportuje warstwę drzew jako PNG z kolorami warstw (layers.cfg).
+/// `layer_colors` = mapa nazwa warstwy → kolor RGB.
+/// `species_layer_map` = mapa indeks gatunku → nazwa warstwy.
+/// Zwraca liczbę narysowanych obiektów.
+pub fn export_trees_png_with_layers(
+    objects: &[PlacedObject],
+    project: &ForestProject,
+    species_layer_map: &std::collections::HashMap<usize, String>,
+    layer_colors: &std::collections::HashMap<String, [u8; 3]>,
+    res: u32,
+    path: impl AsRef<std::path::Path>,
+) -> Result<u32, String> {
+    // Tryb Zones: renderuj strefy jako duże plamy z kolorami warstw
+    if project.png_settings.mode == PngMode::Zones {
+        return export_zones_png_with_layers(project, species_layer_map, layer_colors, res, path);
+    }
+    // Tryb Preview: identyczny jak podgląd (koło 2px, bez randomizacji) ale z kolorami warstw
+    if project.png_settings.mode == PngMode::Preview {
+        if res == 0 {
+            return Err("Rozdzielczość musi być > 0".into());
+        }
+        let mut rgba = vec![0u8; (res as usize) * (res as usize) * 4];
+        let map = project.map_size_m;
+        let sx = f64::from(res) / map;
+        let sy = f64::from(res) / map;
+        let stencil = dot_stencil(2.0);
+        let mut drawn: u32 = 0;
+        for o in objects {
+            let px = (o.x * sx) as i64;
+            let py = ((map - o.y) * sy) as i64;
+            let c = species_layer_map
+                .get(&o.species_index)
+                .and_then(|layer_name| layer_colors.get(layer_name))
+                .copied()
+                .unwrap_or([255, 255, 255]);
+            for &(dx, dy) in &stencil {
+                let x = px + dx;
+                let y = py + dy;
+                if x >= 0 && y >= 0 && (x as u32) < res && (y as u32) < res {
+                    let idx = ((y as usize) * (res as usize) + (x as usize)) * 4;
+                    rgba[idx] = c[0];
+                    rgba[idx + 1] = c[1];
+                    rgba[idx + 2] = c[2];
+                    rgba[idx + 3] = 255;
+                }
+            }
+            drawn += 1;
+        }
+        image::save_buffer(path, &rgba, res, res, image::ColorType::Rgba8)
+            .map_err(|e| format!("Zapis PNG: {e}"))?;
+        return Ok(drawn);
+    }
+
+    if res == 0 {
+        return Err("Rozdzielczość musi być > 0".into());
+    }
+    let mut rgba = vec![0u8; (res as usize) * (res as usize) * 4];
+    let map = project.map_size_m;
+    let sx = f64::from(res) / map;
+    let sy = f64::from(res) / map;
+
+    let base_r = (project.png_settings.dot_size_m * sx).max(1.0);
+    let mut drawn: u32 = 0;
+
+    for o in objects {
+        let px = (o.x * sx) as i64;
+        let py = ((map - o.y) * sy) as i64;
+
+        // pobierz kolor z warstwy przypisanej do gatunku
+        let c = species_layer_map
+            .get(&o.species_index)
+            .and_then(|layer_name| layer_colors.get(layer_name))
+            .copied()
+            .unwrap_or([255, 255, 255]);
+
+        // randomizacja rozmiaru
+        let size_mult = if project.png_settings.randomize_size > 0.0 {
+            let rng = hash2(o.x, o.y, project.seed);
+            1.0 + (rng - 0.5) * 2.0 * project.png_settings.randomize_size
+        } else {
+            1.0
+        };
+        let r = (base_r * size_mult).max(0.5);
+        let ri = r.ceil() as i64;
+
+        // randomizacja rotacji (dla Square/Diamond)
+        let angle = if project.png_settings.randomize_rotation {
+            let rng = hash2(o.x + 1000.0, o.y + 1000.0, project.seed);
+            rng * std::f64::consts::TAU
+        } else {
+            match project.png_settings.shape {
+                PngShape::Diamond => std::f64::consts::FRAC_PI_4,
+                _ => 0.0,
+            }
+        };
+
+        let cos_a = angle.cos();
+        let sin_a = angle.sin();
+
+        for dy in -ri..=ri {
+            for dx in -ri..=ri {
+                // obróć punkt
+                let rx = dx as f64 * cos_a - dy as f64 * sin_a;
+                let ry = dx as f64 * sin_a + dy as f64 * cos_a;
+
+                let inside = match project.png_settings.shape {
+                    PngShape::Circle => (rx * rx + ry * ry) <= r * r,
+                    PngShape::Square => rx.abs() <= r && ry.abs() <= r,
+                    PngShape::Diamond => rx.abs() + ry.abs() <= r,
+                    PngShape::Blob => {
+                        let dist = (rx * rx + ry * ry).sqrt();
+                        let angle = ry.atan2(rx);
+                        let phase1 = hash2(o.x + 11.0, o.y + 17.0, project.seed) * std::f64::consts::TAU;
+                        let phase2 = hash2(o.x + 91.0, o.y + 33.0, project.seed) * std::f64::consts::TAU;
+                        let wobble = 0.30 * (angle * 3.0 + phase1).sin()
+                            + 0.18 * (angle * 5.0 + phase2).cos()
+                            + 0.12 * (angle * 7.0 - phase1 * 0.5).sin();
+                        let r_eff = r * (1.0 + wobble).clamp(0.65, 1.35);
+                        dist <= r_eff
+                    }
+                };
+
+                if inside {
+                    let x = px + dx;
+                    let y = py + dy;
+                    if x >= 0 && y >= 0 && (x as u32) < res && (y as u32) < res {
+                        let idx = ((y as usize) * (res as usize) + (x as usize)) * 4;
+                        rgba[idx] = c[0];
+                        rgba[idx + 1] = c[1];
+                        rgba[idx + 2] = c[2];
+                        rgba[idx + 3] = 255;
+                    }
+                }
+            }
+        }
+        drawn += 1;
+    }
+
+    image::save_buffer(
+        path,
+        &rgba,
+        res,
+        res,
+        image::ColorType::Rgba8,
+    )
+    .map_err(|e| format!("Zapis PNG: {e}"))?;
+    Ok(drawn)
+}
+
+/// Eksport warstw stref jako dużych plam z kolorami warstw (tryb Zones dla warstw).
+fn export_zones_png_with_layers(
+    project: &ForestProject,
+    species_layer_map: &std::collections::HashMap<usize, String>,
+    layer_colors: &std::collections::HashMap<String, [u8; 3]>,
+    res: u32,
+    path: impl AsRef<std::path::Path>,
+) -> Result<u32, String> {
+    if res == 0 {
+        return Err("Rozdzielczość musi być > 0".into());
+    }
+    // Zbuduj kolory stref z warstw: kolor strefy = kolor warstwy pierwszego gatunku strefy
+    let zone_colors: Vec<[u8; 3]> = project
+        .zones
+        .iter()
+        .map(|z| {
+            z.species_weights
+                .first()
+                .and_then(|(si, _)| species_layer_map.get(si))
+                .and_then(|ln| layer_colors.get(ln))
+                .copied()
+                .unwrap_or([255, 255, 255])
+        })
+        .collect();
+
+    // Jeśli brak maski, nie możemy renderować stref – zwróć błąd
+    // Szukamy maski w pliku: spróbuj wczytać z project.paths.mask jeśli istnieje
+    if let Some(mask_path) = &project.paths.mask {
+        if let Ok(mask) = MaskImage::load(mask_path) {
+            return export_zones_png(&mask, project, &zone_colors, res, path);
+        }
+    }
+    Err("Brak maski — tryb Strefy wymaga wczytanej maski.".into())
+}
+
+/// Eksportuje warstwę stref lasu jako PNG (tryb Zones).
+/// Renderuje maskę z kolorami stref zamiast pojedynczych drzew.
+pub fn export_zones_png(
+    mask: &MaskImage,
+    project: &ForestProject,
+    colors: &[[u8; 3]],
+    res: u32,
+    path: impl AsRef<std::path::Path>,
+) -> Result<u32, String> {
+    if res == 0 {
+        return Err("Rozdzielczość musi być > 0".into());
+    }
+
+    let mut rgba = vec![0u8; (res as usize) * (res as usize) * 4];
+    let map = project.map_size_m;
+    let sx = f64::from(res) / map;
+    let sy = f64::from(res) / map;
+
+    // Skalowanie z maski do wyjściowej rozdzielczości
+    let mask_sx = f64::from(mask.width) / map;
+    let mask_sy = f64::from(mask.height) / map;
+
+    let mut drawn: u32 = 0;
+
+    for py in 0..res {
+        for px in 0..res {
+            // Mapuj piksel wyjściowy na współrzędne świata
+            let wx = f64::from(px) / sx;
+            let wy = map - f64::from(py) / sy;
+
+            // Mapuj na piksel maski
+            let mx = (wx * mask_sx) as u32;
+            let my = ((map - wy) * mask_sy) as u32;
+
+            if mx < mask.width && my < mask.height {
+                let pixel = mask.pixel(mx, my);
+                // Znajdź strefę dla tego koloru
+                if let Some(zone_idx) = project.zones.iter().position(|z| {
+                    let dr = (pixel.0[0] as i16 - z.color.0[0] as i16).abs();
+                    let dg = (pixel.0[1] as i16 - z.color.0[1] as i16).abs();
+                    let db = (pixel.0[2] as i16 - z.color.0[2] as i16).abs();
+                    (dr + dg + db) <= project.color_tolerance as i16
+                }) {
+                    let c = colors.get(zone_idx).copied().unwrap_or([255, 255, 255]);
+                    let out_idx = (py as usize * res as usize + px as usize) * 4;
+                    rgba[out_idx] = c[0];
+                    rgba[out_idx + 1] = c[1];
+                    rgba[out_idx + 2] = c[2];
+                    rgba[out_idx + 3] = 255;
+                    drawn += 1;
+                }
+            }
+        }
     }
 
     image::save_buffer(

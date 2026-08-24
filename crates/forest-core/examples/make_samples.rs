@@ -169,6 +169,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             heightmap_asc: Some(asc_path.to_string_lossy().to_string()),
             exclusions_geojson: Some(gj_path.to_string_lossy().to_string()),
         },
+        layer_library: Default::default(),
+        png_settings: Default::default(),
     };
     project.sanitize();
 

@@ -122,6 +122,12 @@ struct ForestApp {
 
     // język interfejsu
     lang: Lang,
+
+    // warstwy z layers.cfg
+    /// Mapa: indeks gatunku → nazwa warstwy (do eksportu PNG z kolorami warstw)
+    species_layer_assignment: std::collections::HashMap<usize, String>,
+    /// Mapa: nazwa grupy → nazwa warstwy (do masowego przypisywania)
+    group_layer_assignment: std::collections::HashMap<String, String>,
 }
 
 /// Znormalizowany podgląd presetu (wbudowanego lub użytkownika).
@@ -190,6 +196,8 @@ impl ForestApp {
             preset_edit_open: None,
             presets_dirty: false,
             lang: Lang::Pl,
+            species_layer_assignment: std::collections::HashMap::new(),
+            group_layer_assignment: std::collections::HashMap::new(),
         }
     }
 
@@ -537,29 +545,103 @@ impl ForestApp {
 
     /// Eksport warstwy drzew jako przezroczysty PNG (rozdzielczość wg rozmiaru mapy).
     fn export_trees_png(&mut self) {
-        if self.objects.is_empty() {
-            self.error = Some("Brak wygenerowanych obiektów.".into());
-            return;
-        }
         let Some(path) = rfd::FileDialog::new()
-            .set_title("Eksport warstwy drzew (PNG)")
+            .set_title("Eksport PNG")
             .add_filter("PNG", &["png"])
-            .set_file_name("warstwa_drzew.png")
+            .set_file_name("warstwa.png")
             .save_file()
         else {
             return;
         };
         // rozdzielczość = rozmiar mapy w metrach (1 px = 1 m), z ograniczeniem
         let res = (self.project.map_size_m as u32).clamp(64, 16384);
-        let colors: Vec<[u8; 3]> = self
-            .project
-            .species
-            .iter()
-            .enumerate()
-            .map(|(i, s)| s.effective_color(i))
+
+        match self.project.png_settings.mode {
+            forest_core::preset::PngMode::Zones => {
+                // Tryb stref - renderuj maskę z kolorami stref
+                let Some(mask) = &self.mask else {
+                    self.error = Some("Brak wczytanej maski.".into());
+                    return;
+                };
+                let colors: Vec<[u8; 3]> = self
+                    .project
+                    .zones
+                    .iter()
+                    .map(|z| {
+                        // Użyj koloru pierwszego gatunku w strefie
+                        if let Some((si, _)) = z.species_weights.first() {
+                            self.project.species.get(*si)
+                                .map(|s| s.effective_color(*si))
+                                .unwrap_or([255, 255, 255])
+                        } else {
+                            [255, 255, 255]
+                        }
+                    })
+                    .collect();
+                match forest_core::export_zones_png(mask, &self.project, &colors, res, path) {
+                    Ok(n) => self.info = Some(format!("Zapisano warstwę stref ({n} pikseli, {res} px).")),
+                    Err(e) => self.error = Some(e),
+                }
+            }
+            forest_core::preset::PngMode::Trees | forest_core::preset::PngMode::Preview => {
+                // Tryb drzew lub podgląd - renderuj pojedyncze obiekty
+                if self.objects.is_empty() {
+                    self.error = Some("Brak wygenerowanych obiektów.".into());
+                    return;
+                }
+                let colors: Vec<[u8; 3]> = self
+                    .project
+                    .species
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| s.effective_color(i))
+                    .collect();
+                match forest_core::export_trees_png(&self.objects, &self.project, &colors, res, path) {
+                    Ok(n) => self.info = Some(format!("Zapisano warstwę drzew ({n} obiektów, {res} px).")),
+                    Err(e) => self.error = Some(e),
+                }
+            }
+        }
+    }
+
+    /// Eksport warstwy drzew jako PNG z kolorami warstw (layers.cfg).
+    fn export_trees_png_with_layers(&mut self) {
+        if self.objects.is_empty() {
+            self.error = Some("Brak wygenerowanych obiektów.".into());
+            return;
+        }
+        if self.project.layer_library.layers.is_empty() {
+            self.error = Some("Brak zaimportowanych warstw (layers.cfg).".into());
+            return;
+        }
+        if self.species_layer_assignment.is_empty() {
+            self.error = Some("Brak przypisanych warstw do gatunków. Zaimportuj layers.cfg i przypisz warstwy.".into());
+            return;
+        }
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Eksport warstwy drzew z kolorami warstw (PNG)")
+            .add_filter("PNG", &["png"])
+            .set_file_name("warstwa_drzew_warstwy.png")
+            .save_file()
+        else {
+            return;
+        };
+        let res = (self.project.map_size_m as u32).clamp(64, 16384);
+
+        // zbuduj mapę kolorów warstw
+        let layer_colors: std::collections::HashMap<String, [u8; 3]> = self.project.layer_library.layers.iter()
+            .map(|l| (l.name.clone(), l.color.0))
             .collect();
-        match forest_core::export_trees_png(&self.objects, &self.project, &colors, res, path) {
-            Ok(n) => self.info = Some(format!("Zapisano warstwę drzew ({n} obiektów, {res} px).")),
+
+        match forest_core::export_trees_png_with_layers(
+            &self.objects,
+            &self.project,
+            &self.species_layer_assignment,
+            &layer_colors,
+            res,
+            path,
+        ) {
+            Ok(n) => self.info = Some(format!("Zapisano warstwę drzew z kolorami warstw ({n} obiektów, {res} px).")),
             Err(e) => self.error = Some(e),
         }
     }
@@ -2557,6 +2639,82 @@ impl ForestApp {
                 });
             });
 
+        // Ustawienia eksportu PNG
+        CollapsingHeader::new(tr(lang, "Ustawienia PNG"))
+            .default_open(false)
+            .show(ui, |ui| {
+                let d = forest_core::preset::PngSettings::default();
+                let s = &mut self.project.png_settings;
+
+                // Wybór trybu
+                ui.horizontal(|ui| {
+                    ui.label(tr(lang, "Tryb:"));
+                    let mode_names = ["Drzewa", "Strefy", "Podgląd"];
+                    let current = match s.mode {
+                        forest_core::preset::PngMode::Trees => 0,
+                        forest_core::preset::PngMode::Zones => 1,
+                        forest_core::preset::PngMode::Preview => 2,
+                    };
+                    for (i, name) in mode_names.iter().enumerate() {
+                        if ui.selectable_label(current == i, tr(lang, name)).clicked() {
+                            s.mode = match i {
+                                0 => forest_core::preset::PngMode::Trees,
+                                1 => forest_core::preset::PngMode::Zones,
+                                _ => forest_core::preset::PngMode::Preview,
+                            };
+                        }
+                    }
+                });
+
+                // Opcje tylko dla trybu Trees
+                if s.mode == forest_core::preset::PngMode::Trees {
+                    ui.horizontal(|ui| {
+                        let m = (s.dot_size_m - d.dot_size_m).abs() > 1e-9;
+                        lbl_mod(ui, tr(lang, "Rozmiar kropki [m]:"), m);
+                        ui.add(egui::DragValue::new(&mut s.dot_size_m).speed(0.1).clamp_range(0.5..=10.0));
+                        if reset_btn(ui, m) {
+                            s.dot_size_m = d.dot_size_m;
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(tr(lang, "Kształt:"));
+                        let shape_names = ["Koło", "Kwadrat", "Romb", "Plama"];
+                        let current = match s.shape {
+                            forest_core::preset::PngShape::Circle => 0,
+                            forest_core::preset::PngShape::Square => 1,
+                            forest_core::preset::PngShape::Diamond => 2,
+                            forest_core::preset::PngShape::Blob => 3,
+                        };
+                        for (i, name) in shape_names.iter().enumerate() {
+                            if ui.selectable_label(current == i, tr(lang, name)).clicked() {
+                                s.shape = match i {
+                                    0 => forest_core::preset::PngShape::Circle,
+                                    1 => forest_core::preset::PngShape::Square,
+                                    2 => forest_core::preset::PngShape::Diamond,
+                                    _ => forest_core::preset::PngShape::Blob,
+                                };
+                            }
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        let m = (s.randomize_size - d.randomize_size).abs() > 1e-9;
+                        lbl_mod(ui, tr(lang, "Randomizacja rozmiaru:"), m);
+                        ui.add(egui::Slider::new(&mut s.randomize_size, 0.0..=0.8));
+                        ui.small(format!("{:.0}%", s.randomize_size * 100.0));
+                        if reset_btn(ui, m) {
+                            s.randomize_size = d.randomize_size;
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut s.randomize_rotation, tr(lang, "Randomizacja rotacji"));
+                    });
+                }
+            });
+
+
         CollapsingHeader::new(tr(lang, "Gatunki"))
             .default_open(false)
             .show(ui, |ui| {
@@ -2738,6 +2896,10 @@ ui.text_edit_singleline(&mut sp.label);
                             ui.text_edit_singleline(&mut sp.model);
                         });
                         ui.horizontal(|ui| {
+                            ui.label("Grupa:");
+                            ui.text_edit_singleline(&mut sp.group);
+                        });
+                        ui.horizontal(|ui| {
                             ui.label("Skala:");
                             ui.add(egui::DragValue::new(&mut sp.scale_min).speed(0.01).clamp_range(0.1..=5.0));
                             ui.label("..");
@@ -2765,6 +2927,113 @@ ui.text_edit_singleline(&mut sp.label);
                         .push(forest_core::species::SpeciesDef::new("Nowy", "model_1f", 0.9, 1.1));
                     for z in &mut self.project.zones {
                         z.species_weights.push((self.project.species.len() - 1, 1.0));
+                    }
+                }
+            });
+
+        // Warstwy (layers.cfg)
+        CollapsingHeader::new(tr(lang, "Warstwy (layers.cfg)"))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.small(tr(lang, "Importuj layers.cfg aby użyć kolorów warstw przy eksporcie PNG."));
+                ui.separator();
+
+                // Import layers.cfg
+                if ui.button(tr(lang, "Importuj layers.cfg...")).clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Config", &["cfg"])
+                        .pick_file()
+                    {
+                        match forest_core::layers::LayerLibrary::load(&path) {
+                            Ok(lib) => {
+                                let n = lib.layers.len();
+                                self.project.layer_library = lib;
+                                self.info = Some(format!("Zaimportowano {n} warstw z layers.cfg"));
+                                self.error = None;
+                            }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                }
+
+                if self.project.layer_library.layers.is_empty() {
+                    ui.small(tr(lang, "Brak zaimportowanych warstw."));
+                } else {
+                    ui.small(format!("{} warstw", self.project.layer_library.layers.len()));
+                    ui.separator();
+
+                    // Przypisanie warstw do grup
+                    ui.small(tr(lang, "Przypisz warstwy do grup gatunków:"));
+                    ui.small(format!("{} gatunków", self.project.species.len()));
+
+                    let mut groups: Vec<String> = self.project.species.iter()
+                        .map(|s| s.group.clone())
+                        .filter(|g| !g.is_empty())
+                        .collect::<std::collections::HashSet<_>>()
+                        .into_iter()
+                        .collect();
+                    groups.sort();
+
+                    ui.small(format!("{} grup gatunków", groups.len()));
+
+                    if groups.is_empty() {
+                        ui.small(tr(lang, "Brak grup gatunków — gatunki muszą mieć ustawione pole 'Grupa'."));
+                    } else {
+                        let layer_names: Vec<String> = self.project.layer_library.layers.iter()
+                            .map(|l| l.name.clone())
+                            .collect();
+
+                        for (gi, group) in groups.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(group.as_str());
+                                let current = self.group_layer_assignment.get(group).cloned().unwrap_or_default();
+                                searchable_combo(
+                                    ui,
+                                    lang,
+                                    &format!("group_layer_{gi}"),
+                                    if current.is_empty() { "— wybierz —".into() } else { current },
+                                    120.0,
+                                    &layer_names,
+                                    |ui, idx| {
+                                        if ui.selectable_label(false, layer_names[idx].clone()).clicked() {
+                                            self.group_layer_assignment.insert(group.clone(), layer_names[idx].clone());
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                    }
+
+                    if ui.button(tr(lang, "Zastosuj grupy do gatunków")).clicked() {
+                        for (i, sp) in self.project.species.iter().enumerate() {
+                            if let Some(layer) = self.group_layer_assignment.get(&sp.group) {
+                                self.species_layer_assignment.insert(i, layer.clone());
+                            }
+                        }
+                        self.info = Some("Przypisano warstwy do gatunków wg grup".into());
+                    }
+
+                    ui.separator();
+
+                    // Lista warstw z kolorami
+                    ui.small(tr(lang, "Warstwy:"));
+                    ScrollArea::vertical()
+                        .max_height(200.0)
+                        .show(ui, |ui| {
+                            for layer in &self.project.layer_library.layers {
+                                let [r, g, b] = layer.color.0;
+                                ui.horizontal(|ui| {
+                                    let (_rect, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                    ui.painter_at(resp.rect).rect_filled(resp.rect, 2.0, Color32::from_rgb(r, g, b));
+                                    ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+                                    ui.label(layer.name.as_str());
+                                });
+                            }
+                        });
+
+                    ui.separator();
+                    if ui.button(tr(lang, "Eksport PNG (warstwy)")).clicked() {
+                        self.export_trees_png_with_layers();
                     }
                 }
             });
