@@ -171,6 +171,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
         layer_library: Default::default(),
         png_settings: Default::default(),
+        generation_order: vec![
+            forest_core::preset::GenStep::Mask,
+            forest_core::preset::GenStep::Cut,
+        ],
     };
     project.sanitize();
 

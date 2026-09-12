@@ -264,6 +264,7 @@ pub fn areas_to_geojson(
                 "label": a.label,
                 "enabled": a.enabled,
                 "density_per_ha": a.density_per_ha,
+                "cutting": a.cutting,
             },
             "geometry": { "type": "Polygon", "coordinates": rings },
         }));
@@ -285,6 +286,7 @@ pub struct ImportedArea {
     pub label: Option<String>,
     pub enabled: Option<bool>,
     pub density_per_ha: Option<f32>,
+    pub cutting: Option<bool>,
     pub outer: Vec<[f64; 2]>,
     pub holes: Vec<Vec<[f64; 2]>>,
 }
@@ -377,11 +379,13 @@ pub fn areas_from_geojson(text: &str) -> Result<Vec<ImportedArea>, String> {
             .get("density_per_ha")
             .and_then(|d| d.as_f64())
             .map(|d| d as f32);
+        let cutting = props.get("cutting").and_then(|b| b.as_bool());
         let mut push_area = |outer: Vec<[f64; 2]>, holes: Vec<Vec<[f64; 2]>>| {
             out.push(ImportedArea {
                 label: label.clone(),
                 enabled,
                 density_per_ha: density,
+                cutting,
                 outer,
                 holes,
             });
@@ -510,6 +514,7 @@ mod tests {
                 [40.0, 60.0],
             ]],
             polygon: vec![[10.0, 10.0], [110.0, 10.0], [110.0, 110.0], [10.0, 110.0]],
+            cutting: false,
         };
         let json = super::areas_to_geojson(&[area], 200_000.0, 0.0).unwrap();
         let parsed = GeoJsonData::parse(&json).unwrap();
@@ -549,6 +554,7 @@ mod tests {
                 [40.0, 60.0],
             ]],
             polygon: vec![[10.0, 10.0], [110.0, 10.0], [110.0, 110.0], [10.0, 110.0]],
+            cutting: false,
         };
         let json = super::areas_to_geojson(&[area], 200_000.0, 0.0).unwrap();
         let imported = super::areas_from_geojson(&json).unwrap();

@@ -743,6 +743,50 @@ pub fn generate(
     // muszą żyć dłużej (drop jest w odwrotnej kolejności)
     let mut edge_bands: Vec<(usize, Vec<(u32, u8)>)> = Vec::new();
 
+    // --- kolejność generowania (per-obszar, konfigurowalna) --------------------
+    use crate::preset::GenStep;
+    // sanitize już rozwija legacy Areas -> Area(i), ale na wszelki wypadek obsłuż tutaj
+    let order: Vec<GenStep> = {
+        let o = if project.generation_order.is_empty() {
+            vec![GenStep::Mask, GenStep::Cut]
+        } else {
+            project.generation_order.clone()
+        };
+        // rozwiń legacy Areas
+        let mut expanded: Vec<GenStep> = Vec::new();
+        for e in o {
+            match e {
+                GenStep::Areas => {
+                    for i in 0..project.areas.len() { expanded.push(GenStep::Area(i)); }
+                }
+                other => expanded.push(other),
+            }
+        }
+        // dedup + filtr niepoprawnych indeksów
+        let mut seen_mask = false;
+        let mut seen_cut = false;
+        let mut seen_area: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut clean: Vec<GenStep> = Vec::new();
+        for e in expanded {
+            match e {
+                GenStep::Mask => if !seen_mask { seen_mask=true; clean.push(e); },
+                GenStep::Cut => if !seen_cut { seen_cut=true; clean.push(e); },
+                GenStep::Area(i) => if i < project.areas.len() && seen_area.insert(i) { clean.push(e); },
+                GenStep::Areas => {},
+            }
+        }
+        if !seen_mask { clean.insert(0, GenStep::Mask); }
+        if !seen_cut { clean.push(GenStep::Cut); }
+        for i in 0..project.areas.len() {
+            if !seen_area.contains(&i) {
+                if let Some(pos) = clean.iter().position(|e| matches!(e, GenStep::Cut)) {
+                    clean.insert(pos, GenStep::Area(i));
+                } else { clean.push(GenStep::Area(i)); }
+            }
+        }
+        clean
+    };
+
     // mapa głębokości od krawędzi (wtapianie pasa w głąb stref z maski)
     // blend_inside_m działa niezależnie od edges.enabled
     let blend_inside = project.edges.blend_inside_m.max(0.0);
@@ -756,7 +800,24 @@ pub fn generate(
     };
 
 
-    let mut jobs: Vec<Job> = Vec::new();
+    // poligony wycinające per-obszar (dla kroku Area(i) gdy cutting)
+    let cutting_polys_by_idx: Vec<Option<Polygon>> = project.areas.iter().map(|a| {
+        if a.enabled && a.cutting && a.polygon.len() >= 3 {
+            Some(Polygon {
+                rings: {
+                    let mut rings = vec![a.polygon.clone()];
+                    rings.extend(a.holes.iter().filter(|h| h.len() >= 3).cloned());
+                    rings
+                }
+            })
+        } else { None }
+    }).collect();
+
+    // --- budowa kolejek zadań per faza (wspólna siatka, zachowujemy d) ----------
+    let mut jobs_mask: Vec<Job> = Vec::new();
+    // per-obszar: jobs_per_area[i] = wszystkie zadania generujące dla tego obszaru (w tym pasy brzegowe)
+    let mut jobs_per_area: Vec<Vec<Job>> = Vec::with_capacity(project.areas.len());
+    for _ in 0..project.areas.len() { jobs_per_area.push(Vec::new()); }
     let mut max_min_dist = 1.0f64;
     let mut total_target = 0usize;
 
@@ -785,7 +846,7 @@ pub fn generate(
                     )),
                     None => Box::new(make_px_cand(zp, mask.unwrap().width, size, ps)),
                 };
-            jobs.push(Job {
+            jobs_mask.push(Job {
                 label: zone.label.clone(),
                 target,
                 min_dist: d,
@@ -799,7 +860,7 @@ pub fn generate(
     // --- Źródło: obszary rysowane (poligony) --------------------------------------
     if project.use_areas {
         for (ai, area) in project.areas.iter().enumerate() {
-            if !area.enabled {
+            if !area.enabled || area.cutting {
                 continue;
             }
             let ring = &area.polygon;
@@ -855,7 +916,7 @@ pub fn generate(
                 (bmax_x + margin_jag).min(size),
                 (bmax_y + margin_jag).min(size),
             );
-            jobs.push(Job {
+            jobs_per_area[ai].push(Job {
                 label: area.label.clone(),
                 target,
                 min_dist: d,
@@ -972,7 +1033,7 @@ pub fn generate(
                 let set: &[(u32, u8)] = band_set;
                 let width = m.width;
                     let wob = wob.clone();
-                    jobs.push(Job {
+                    jobs_mask.push(Job {
                         label: format!(
                             "Granica – {} ({}/{})",
                             project.zones[*zi].label,
@@ -1009,8 +1070,8 @@ pub fn generate(
     // — każdy obszar może mieć WŁASNĄ granicę (nadpisuje globalną),
     //   niezależnie od globalnego przełącznika
     if project.use_areas {
-            for (_ai, area) in project.areas.iter().enumerate() {
-                if !area.enabled {
+            for (ai, area) in project.areas.iter().enumerate() {
+                if !area.enabled || area.cutting {
                     continue;
                 }
                 let eff = area.edges.as_ref().unwrap_or(&project.edges);
@@ -1087,7 +1148,7 @@ pub fn generate(
                     let ring_c = ring.clone();
                     let wob_a = wob_a.clone();
                     let cf_samples = cf_samples.clone();
-                    jobs.push(Job {
+                    jobs_per_area[ai].push(Job {
                         label: format!(
                             "Granica – {} ({}/{})",
                             area.label,
@@ -1151,7 +1212,7 @@ pub fn generate(
         ));
     }
 
-    // --- Wykonanie ------------------------------------------------------------
+    // --- Wykonanie w kolejności określonej przez generation_order ---------------
     let cell = max_min_dist.max(1.0);
     let mut grid: HashMap<(i64, i64), Vec<[f32; 2]>> = HashMap::new();
     let mut objects: Vec<PlacedObject> = Vec::with_capacity(total_target.min(1 << 20));
@@ -1160,198 +1221,190 @@ pub fn generate(
         ..Default::default()
     };
 
-    let n_jobs = jobs.len();
-    let span = 1.0 / n_jobs.max(1) as f64;
+    let n_jobs_total: usize = jobs_mask.len() + jobs_per_area.iter().map(|v| v.len()).sum::<usize>();
+    let span = 1.0 / n_jobs_total.max(1) as f64;
     let rng = &mut StdRng::seed_from_u64(project.seed);
-    // etykiety źródeł do korekty statystyk po wycięciu
-    let source_labels: Vec<(usize, String)> = jobs
-        .iter()
-        .map(|j| (j.source_index, j.label.clone()))
-        .collect();
+    // etykiety źródeł do korekty statystyk po wycięciu (pełna lista)
+    let mut all_labels: Vec<(usize, String)> = Vec::new();
+    all_labels.extend(jobs_mask.iter().map(|j| (j.source_index, j.label.clone())));
+    for v in &jobs_per_area { all_labels.extend(v.iter().map(|j| (j.source_index, j.label.clone()))); }
+    let source_labels = all_labels;
 
-    for (ji, job) in jobs.iter_mut().enumerate() {
-        let prev_total = stats.total;
-        let accepted = run_dart(
-            &env,
-            rng,
-            &mut grid,
-            cell,
-            &mut objects,
-            &mut stats,
-            job.target,
-            job.min_dist,
-            &job.cum,
-            job.source_index,
-            &mut job.cand,
-            progress,
-            ji as f64 * span,
-            span,
-        );
-        if job.is_edge {
-            stats.edge_count += stats.total - prev_total;
-        }
-        stats.per_source.push((job.label.clone(), accepted));
-    }
-
-    // --- Wycinanie po kolorach maski (+ bufor) ---------------------------------
-    if !project.cut_zones.is_empty() {
-        let Some(m) = mask else {
-            return Err(
-                "Projekt ma strefy wycinania, ale nie wczytano maski — \
-                 wycinanie wymaga maski do oceny kolorów."
-                    .into(),
+    // helper: uruchom zestaw jobs sekwencyjnie
+    let mut next_ji: usize = 0;
+    let mut run_jobs = |jobs: &mut Vec<Job>, grid: &mut HashMap<(i64,i64), Vec<[f32;2]>>, objects: &mut Vec<PlacedObject>, stats: &mut GenStats, next_ji: &mut usize| {
+        for job in jobs.iter_mut() {
+            let prev_total = stats.total;
+            let accepted = run_dart(
+                &env,
+                rng,
+                grid,
+                cell,
+                objects,
+                stats,
+                job.target,
+                job.min_dist,
+                &job.cum,
+                job.source_index,
+                &mut job.cand,
+                progress,
+                *next_ji as f64 * span,
+                span,
             );
+            if job.is_edge {
+                stats.edge_count += stats.total - prev_total;
+            }
+            stats.per_source.push((job.label.clone(), accepted));
+            *next_ji += 1;
+        }
+    };
+
+    // --- helpers wycinania ---
+    let apply_color_cut = |objects: &mut Vec<PlacedObject>, stats: &mut GenStats| -> Result<(), String> {
+        if project.cut_zones.is_empty() { return Ok(()); }
+        let Some(m) = mask else {
+            return Err("Projekt ma strefy wycinania po kolorze, ale nie wczytano maski — wycinanie wymaga maski do oceny kolorów.".into());
         };
-        use std::collections::HashSet;
-        let mut cut_set: HashSet<u32> = HashSet::new();
-
-        // marginesy w pikselach (0 = bez bufora, tylko piksele koloru)
-        let margins: Vec<usize> = project
-            .cut_zones
-            .iter()
-            .map(|cz| {
-                let mp = (f64::from(cz.margin_m) / ps).ceil() as usize;
-                mp.min(4096)
-            })
-            .collect();
+        let mut cut_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let margins: Vec<usize> = project.cut_zones.iter().map(|cz| {
+            let mp = (f64::from(cz.margin_m) / ps).ceil() as usize; mp.min(4096)
+        }).collect();
         let max_mp = margins.iter().copied().max().unwrap_or(0);
-
-        // ramka skanowania: tylko obszar, w którym są obiekty, + bufor
-        // (drastycznie mniejsze pole przy lasach zajmujących część mapy)
         let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0u32, 0u32);
-        for o in &objects {
+        for o in objects.iter() {
             let fx = o.x / ps;
             let fy_top = (size - o.y) / ps;
-            if fx < 0.0
-                || fy_top < 0.0
-                || fx >= f64::from(m.width)
-                || fy_top >= f64::from(m.height)
-            {
-                continue;
-            }
-            let xi = fx as u32;
-            let yi = fy_top as u32;
-            x0 = x0.min(xi);
-            y0 = y0.min(yi);
-            x1 = x1.max(xi);
-            y1 = y1.max(yi);
+            if fx < 0.0 || fy_top < 0.0 || fx >= f64::from(m.width) || fy_top >= f64::from(m.height) { continue; }
+            let xi = fx as u32; let yi = fy_top as u32;
+            x0 = x0.min(xi); y0 = y0.min(yi); x1 = x1.max(xi); y1 = y1.max(yi);
         }
         let pad = max_mp as u32;
         let sx0 = x0.saturating_sub(pad);
         let sy0 = y0.saturating_sub(pad);
         let sx1 = (x1 + pad).min(m.width - 1);
         let sy1 = (y1 + pad).min(m.height - 1);
-
-        // wspólny przebieg po ramce: surowe odczyty RGBA + wczesne odrzucanie
-        // po kanałach (Manhattan <= tol wymaga |dr|,|dg|,|db| <= tol)
         let tol = project.color_tolerance as i32;
         let n_z = project.cut_zones.len();
         let mut seeds: Vec<Vec<u32>> = vec![Vec::new(); n_z];
         if sx0 <= sx1 && sy0 <= sy1 && !objects.is_empty() {
-            let rgba = &m.rgba;
-            let w = m.width as usize;
+            let rgba = &m.rgba; let w = m.width as usize;
             for y in sy0..=sy1 {
                 let row = (y as usize) * w;
                 for x in sx0..=sx1 {
                     let off = (row + x as usize) * 4;
-                    if rgba[off + 3] < 128 {
-                        continue;
-                    }
-                    let r = i32::from(rgba[off]);
-                    let g = i32::from(rgba[off + 1]);
-                    let b = i32::from(rgba[off + 2]);
+                    if rgba[off+3] < 128 { continue; }
+                    let r=i32::from(rgba[off]); let g=i32::from(rgba[off+1]); let b=i32::from(rgba[off+2]);
                     for (zi, cz) in project.cut_zones.iter().enumerate() {
-                        let [cr, cg, cb] = cz.color.0;
-                        if (r - i32::from(cr)).abs() > tol {
-                            continue;
-                        }
-                        if (g - i32::from(cg)).abs() > tol {
-                            continue;
-                        }
-                        if (b - i32::from(cb)).abs() > tol {
-                            continue;
-                        }
-                        seeds[zi].push((y * m.width + x) as u32);
-                        // bez `break` — piksel może pasować do kilku stref
+                        let [cr,cg,cb]=cz.color.0;
+                        if (r-i32::from(cr)).abs() > tol { continue; }
+                        if (g-i32::from(cg)).abs() > tol { continue; }
+                        if (b-i32::from(cb)).abs() > tol { continue; }
+                        seeds[zi].push(y*m.width+x);
                     }
                 }
             }
         }
-
-        // dylatacja per strefa (tylko gdy bufor > 0)
         for (zi, seed_vec) in seeds.into_iter().enumerate() {
             let mp = margins[zi];
-            if mp == 0 {
-                cut_set.extend(seed_vec);
-                continue;
-            }
-            let mut local: HashSet<u32> = HashSet::with_capacity(seed_vec.len().saturating_mul(2));
-            let mut frontier: Vec<u32> = Vec::with_capacity(seed_vec.len());
-            for s in seed_vec {
-                if local.insert(s) {
-                    frontier.push(s);
-                }
-            }
+            if mp==0 { cut_set.extend(seed_vec); continue; }
+            let mut local: std::collections::HashSet<u32> = std::collections::HashSet::with_capacity(seed_vec.len().saturating_mul(2));
+            let mut frontier: Vec<u32>=Vec::with_capacity(seed_vec.len());
+            for s in seed_vec { if local.insert(s) { frontier.push(s); } }
             for _level in 0..mp {
-                if frontier.is_empty() {
-                    break;
-                }
-                let mut next = Vec::new();
+                if frontier.is_empty() { break; }
+                let mut next=Vec::new();
                 for &idx in &frontier {
-                    let x = idx % m.width;
-                    let y = idx / m.width;
-                    let ci = idx as usize;
-                    let mut neigh: [Option<usize>; 4] = [None; 4];
-                    if x > 0 {
-                        neigh[0] = Some(ci - 1);
-                    }
-                    if x + 1 < m.width {
-                        neigh[1] = Some(ci + 1);
-                    }
-                    if y > 0 {
-                        neigh[2] = Some(ci - m.width as usize);
-                    }
-                    if y + 1 < m.height {
-                        neigh[3] = Some(ci + m.width as usize);
-                    }
-                    for n in neigh.into_iter().flatten() {
-                        if local.insert(n as u32) {
-                            next.push(n as u32);
-                        }
-                    }
+                    let x=idx % m.width; let y=idx / m.width; let ci=idx as usize;
+                    let mut neigh:[Option<usize>;4]=[None;4];
+                    if x>0 { neigh[0]=Some(ci-1); }
+                    if x+1 < m.width { neigh[1]=Some(ci+1); }
+                    if y>0 { neigh[2]=Some(ci-m.width as usize); }
+                    if y+1 < m.height { neigh[3]=Some(ci+m.width as usize); }
+                    for n in neigh.into_iter().flatten() { if local.insert(n as u32) { next.push(n as u32); } }
                 }
-                frontier = next;
+                frontier=next;
             }
             cut_set.extend(local);
         }
-
         let before = objects.len();
         objects.retain(|o| {
-            let fx = o.x / ps;
-            let fy_top = (size - o.y) / ps;
-            if fx < 0.0 || fy_top < 0.0 || fx >= f64::from(m.width) || fy_top >= f64::from(m.height)
-            {
-                return true; // poza maską — nie oceniamy
-            }
-            let idx = (fy_top as u32) * m.width + (fx as u32);
+            let fx=o.x / ps; let fy_top=(size - o.y)/ps;
+            if fx < 0.0 || fy_top < 0.0 || fx >= f64::from(m.width) || fy_top >= f64::from(m.height) { return true; }
+            let idx=(fy_top as u32)*m.width + (fx as u32);
             !cut_set.contains(&idx)
         });
-        stats.removed_cut = before - objects.len();
+        let removed = before - objects.len();
+        stats.removed_cut += removed;
         stats.total = objects.len();
-        // przelicz liczniki gatunków po wycięciu
-        for (_, c) in stats.per_species.iter_mut() {
-            *c = 0;
-        }
-        for o in &objects {
-            stats.per_species[o.species_index].1 += 1;
-        }
-        // przelicz per_source od zera na podstawie zone_index
-        for (_, c) in stats.per_source.iter_mut() {
-            *c = 0;
-        }
-        for o in &objects {
-            if let Some(pos) = source_labels.iter().position(|(si, _)| *si == o.zone_index) {
+        for (_,c) in stats.per_species.iter_mut() { *c=0; }
+        for o in objects.iter() { stats.per_species[o.species_index].1 += 1; }
+        for (_,c) in stats.per_source.iter_mut() { *c=0; }
+        for o in objects.iter() {
+            if let Some(pos)=source_labels.iter().position(|(si,_)| *si==o.zone_index) {
                 stats.per_source[pos].1 += 1;
+            }
+        }
+        Ok(())
+    };
+    let apply_polygon_cut = |objects: &mut Vec<PlacedObject>, stats: &mut GenStats, poly: &Polygon| {
+        let before = objects.len();
+        objects.retain(|o| !point_in_polygon(poly, o.x, o.y));
+        let removed = before - objects.len();
+        stats.removed_cut += removed;
+        stats.total = objects.len();
+        for (_,c) in stats.per_species.iter_mut() { *c=0; }
+        for o in objects.iter() { stats.per_species[o.species_index].1 += 1; }
+        for (_,c) in stats.per_source.iter_mut() { *c=0; }
+        for o in objects.iter() {
+            if let Some(pos)=source_labels.iter().position(|(si,_)| *si==o.zone_index) {
+                stats.per_source[pos].1 += 1;
+            }
+        }
+    };
+
+    for step in &order {
+        match step {
+            GenStep::Mask => {
+                if project.use_mask_zones {
+                    run_jobs(&mut jobs_mask, &mut grid, &mut objects, &mut stats, &mut next_ji);
+                }
+            }
+            GenStep::Cut => {
+                apply_color_cut(&mut objects, &mut stats)?;
+                // odbuduj siatkę odstępów – wycięte punkty nie mogą blokować dalszego generowania
+                grid.clear();
+                for o in &objects {
+                    let p = [o.x as f32, o.y as f32];
+                    grid.entry(world_to_cell(p, cell)).or_default().push(p);
+                }
+                progress(next_ji as f64 * span);
+            }
+            GenStep::Area(idx) => {
+                let i = *idx;
+                if i >= project.areas.len() { continue; }
+                let area = &project.areas[i];
+                if !area.enabled || !project.use_areas { continue; }
+                if area.cutting {
+                    if let Some(poly) = &cutting_polys_by_idx[i] {
+                        apply_polygon_cut(&mut objects, &mut stats, poly);
+                        grid.clear();
+                        for o in &objects {
+                            let p = [o.x as f32, o.y as f32];
+                            grid.entry(world_to_cell(p, cell)).or_default().push(p);
+                        }
+                        progress(next_ji as f64 * span);
+                    }
+                } else {
+                    run_jobs(&mut jobs_per_area[i], &mut grid, &mut objects, &mut stats, &mut next_ji);
+                }
+            }
+            GenStep::Areas => {
+                // legacy fallback — wygeneruj wszystkie obszary po kolei
+                if project.use_areas {
+                    for v in &mut jobs_per_area {
+                        run_jobs(v, &mut grid, &mut objects, &mut stats, &mut next_ji);
+                    }
+                }
             }
         }
     }
@@ -1708,6 +1761,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         // 16 ha * 200/ha = 3200 celów
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
@@ -1736,6 +1790,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -1828,6 +1883,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         proj.edges = EdgeSettings {
             enabled: true,
@@ -1914,6 +1970,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         let err = proj.validate().unwrap_err();
         assert!(err.contains("przecina sam siebie"), "{err}");
@@ -1935,6 +1992,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -1973,6 +2031,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 1_000);
@@ -2077,6 +2136,7 @@ mod tests {
             },
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         };
         proj.areas.push(mk_area("Z granicą", 50.0, true));
         proj.areas.push(mk_area("Bez granicy", 620.0, false));
@@ -2130,6 +2190,7 @@ mod tests {
                 edges: None,
                 color_filter: None,
                 holes: Vec::new(),
+             cutting: false,
             });
             proj
         };
@@ -2183,6 +2244,7 @@ mod tests {
                 tolerance: 40,
             }),
             holes: Vec::new(),
+         cutting: false,
         });
 
         // mapa 1000 m, podkład 100 px => 10 m/px; lewa połowa to [0,500)
@@ -2209,6 +2271,7 @@ mod tests {
             edges: None,
             color_filter: None,
             holes: Vec::new(),
+         cutting: false,
         });
         let (objs2, _) = generate(&proj2, None, Some(&sat), None, None, &|_| {}).unwrap();
         assert!(objs2.iter().any(|o| o.x > 600.0));

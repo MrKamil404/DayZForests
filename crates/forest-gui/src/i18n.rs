@@ -942,6 +942,50 @@ const DICT: &[Entry] = &[
     ("Plama", "Blob", "Klecks"),
     ("Randomizacja rozmiaru:", "Size randomization:", "Größenrandomisierung:"),
     ("Randomizacja rotacji", "Rotation randomization", "Rotationsrandomisierung"),
+    // --- kolejność generowania ---
+    ("Kolejność generowania", "Generation order", "Generierungsreihenfolge"),
+    (
+        "Kolejność etapów: wspólna siatka odstępów jest współdzielona, a wycinanie usuwa obiekty wygenerowane PRZED tym etapem.",
+        "Step order: a shared spacing grid is used, and cut removes objects generated BEFORE that step.",
+        "Reihenfolge: gemeinsames Abstands-Raster, Ausschneiden entfernt nur Objekte VOR diesem Schritt."
+    ),
+    (
+        "Np. Duży obszar → Wycinanie środka → Mały obszar = w środku wyrośnie nowy las.",
+        "E.g. Large area → Cut centre → Small area = new forest grows inside the cut.",
+        "Z.B. Große Fläche → Mitte ausschneiden → Kleine Fläche = neuer Wald wächst in der Lücke."
+    ),
+    (
+        "Przeciągnij ☰ aby zmienić kolejność. Każdy obszar może generować lub wycinać.",
+        "Drag ☰ to reorder. Each area can generate or cut.",
+        "Mit ☰ umsortieren. Jeder Bereich kann erzeugen oder ausschneiden."
+    ),
+    (
+        "Przeciągnij aby zmienić kolejność",
+        "Drag to reorder",
+        "Ziehen zum Umsortieren"
+    ),
+    ("Przesuń wyżej", "Move up", "Nach oben"),
+    ("Przesuń niżej", "Move down", "Nach unten"),
+    ("⟲ Domyślnie", "⟲ Default", "⟲ Standard"),
+    (
+        "Maska → obszary po kolei → Wycinanie (kolory) na końcu",
+        "Mask → areas in order → Color cut at the end",
+        "Maske → Bereiche der Reihe nach → Farbschnitt am Ende"
+    ),
+    ("Wycinanie (kolory)", "Cut (colors)", "Ausschneiden (Farben)"),
+    ("(wycina obiekty)", "(cuts objects)", "(schneidet Objekte)"),
+    (
+        "✂ Tryb wycinania — obszar usuwa obiekty z wnętrza (nie generuje).",
+        "✂ Cut mode — area removes objects inside (does not generate).",
+        "✂ Schnittmodus — Bereich entfernt Objekte innen (erzeugt keine)."
+    ),
+    (
+        "Usuwa obiekty z maski i innych obszarów wygenerowane PRZED etapem wycinania (kolejność w ⚙ Kolejność generowania).",
+        "Removes objects from the mask and other areas generated BEFORE the cut step (order in ⚙ Generation order).",
+        "Entfernt Objekte aus Maske und anderen Bereichen, die VOR dem Schnitt erzeugt wurden (Reihenfolge in ⚙ Generierungsreihenfolge)."
+    ),
+    ("✂️ Wycinanie", "✂️ Cut", "✂️ Ausschneiden"),
+    ("Gdy włączone, obszar działa TYLKO jako wycinanie – usuwa obiekty z wnętrza (nie generuje drzew). Inne opcje znikają.", "When enabled, area works ONLY as cut — removes objects inside (does not generate trees). Other options disappear.", "Wenn aktiv, wirkt der Bereich NUR als Schnitt — entfernt Objekte innen (erzeugt keine Bäume). Andere Optionen verschwinden."),
 ];
 
 /// Tłumaczy tekst źródłowy (PL). Brak wpisu -> zwraca oryginał.

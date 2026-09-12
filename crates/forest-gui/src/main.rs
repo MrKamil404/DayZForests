@@ -128,6 +128,9 @@ struct ForestApp {
     species_layer_assignment: std::collections::HashMap<usize, String>,
     /// Mapa: nazwa grupy → nazwa warstwy (do masowego przypisywania)
     group_layer_assignment: std::collections::HashMap<String, String>,
+
+    /// Drag&drop dla listy kolejności generowania (indeks przeciąganego elementu)
+    gen_order_drag: Option<usize>,
 }
 
 /// Znormalizowany podgląd presetu (wbudowanego lub użytkownika).
@@ -198,6 +201,7 @@ impl ForestApp {
             lang: Lang::Pl,
             species_layer_assignment: std::collections::HashMap::new(),
             group_layer_assignment: std::collections::HashMap::new(),
+            gen_order_drag: None,
         }
     }
 
@@ -312,6 +316,7 @@ impl ForestApp {
                         color_filter: None,
                         holes: area_holes,
                         polygon: outer.clone(),
+                        cutting: false,
                     });
                     self.area_copy_src.push(None);
                     added += 1;
@@ -323,6 +328,7 @@ impl ForestApp {
                     );
                     return;
                 }
+                self.project.sanitize();
                 self.refresh_intersection_marks();
                 self.error = None;
                 self.info = Some(tf(
@@ -404,6 +410,7 @@ impl ForestApp {
                 color_filter: None,
                 holes: holes_kept,
                 polygon: shift(&ia.outer),
+                cutting: ia.cutting.unwrap_or(false),
             });
             self.area_copy_src.push(None);
             added += 1;
@@ -418,6 +425,7 @@ impl ForestApp {
             );
             return;
         }
+        self.project.sanitize();
         self.refresh_intersection_marks();
         self.error = None;
         self.info = Some(tf(
@@ -881,8 +889,17 @@ impl ForestApp {
             color_filter: None,
             holes: Vec::new(),
             polygon: std::mem::take(&mut self.draw_points),
+            cutting: false,
         });
         self.area_copy_src.push(None);
+        // dodaj nowy obszar do kolejności generowania (przed wycinanie kolorów)
+        let new_idx = self.project.areas.len() - 1;
+        if let Some(pos) = self.project.generation_order.iter().position(|e| matches!(e, forest_core::preset::GenStep::Cut)) {
+            self.project.generation_order.insert(pos, forest_core::preset::GenStep::Area(new_idx));
+        } else {
+            self.project.generation_order.push(forest_core::preset::GenStep::Area(new_idx));
+        }
+        self.project.sanitize();
         let area_label = self.project.areas.last().unwrap().label.clone();
         let ha_str = format!("{:.1}", area_ha);
         self.refresh_intersection_marks();
@@ -2585,6 +2602,155 @@ impl ForestApp {
                 ));
             });
 
+        CollapsingHeader::new(tr(lang, "Kolejność generowania"))
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.small(tr(
+                    lang,
+                    "Kolejność etapów: wspólna siatka odstępów jest współdzielona, \
+                     a wycinanie usuwa obiekty wygenerowane PRZED tym etapem.",
+                ));
+                ui.small(tr(
+                    lang,
+                    "Np. Duży obszar → Wycinanie środka → Mały obszar = w środku wyrośnie nowy las.",
+                ));
+                ui.small(tr(
+                    lang,
+                    "Przeciągnij ☰ aby zmienić kolejność. Każdy obszar może generować lub wycinać.",
+                ));
+                ui.separator();
+                // synchronizacja: upewnij się, że order zawiera wszystkie obszary dokładnie raz
+                self.project.sanitize();
+                let order = &mut self.project.generation_order;
+                let areas_snap = self.project.areas.clone();
+                let order_len = order.len();
+                // drag & drop state
+                let mut swap_via_buttons: Option<(usize, usize)> = None;
+                let mut drag_move: Option<(usize, usize)> = None;
+                let mut row_rects: Vec<egui::Rect> = Vec::with_capacity(order_len);
+                for i in 0..order_len {
+                    let label = order[i].display_label(&areas_snap);
+                    let translated = match &order[i] {
+                        forest_core::preset::GenStep::Mask => tr(lang, "Maska"),
+                        forest_core::preset::GenStep::Cut => tr(lang, "Wycinanie (kolory)"),
+                        forest_core::preset::GenStep::Areas => tr(lang, "Obszary"),
+                        forest_core::preset::GenStep::Area(_) => label.clone(),
+                    };
+                    let is_dragged = self.gen_order_drag == Some(i);
+                    let frame = egui::Frame::default()
+                        .fill(if is_dragged { Color32::from_rgb(70, 70, 90) } else { Color32::TRANSPARENT })
+                        .rounding(egui::Rounding::same(4.0))
+                        .inner_margin(egui::Margin::symmetric(6.0, 2.0));
+                    let inner = frame.show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            // drag handle
+                            let (rect, resp) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::click_and_drag());
+                            let icon = if is_dragged { "✥" } else { "☰" };
+                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(13.0), Color32::from_rgb(180, 180, 180));
+                            let resp = resp.on_hover_text(tr(lang, "Przeciągnij aby zmienić kolejność"));
+                            if resp.drag_started() {
+                                self.gen_order_drag = Some(i);
+                            }
+                            if resp.dragged() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                            }
+                            ui.label(format!("{}. {}", i + 1, translated));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let can_up = i > 0;
+                                let can_down = i + 1 < order_len;
+                                if ui.add_enabled(can_up, egui::Button::new("▲").small()).on_hover_text(tr(lang, "Przesuń wyżej")).clicked() {
+                                    swap_via_buttons = Some((i, i - 1));
+                                }
+                                if ui.add_enabled(can_down, egui::Button::new("▼").small()).on_hover_text(tr(lang, "Przesuń niżej")).clicked() {
+                                    swap_via_buttons = Some((i, i + 1));
+                                }
+                            });
+                        });
+                    });
+                    row_rects.push(inner.response.rect);
+                }
+                // obsługa drag & drop – znajdź cel upuszczenia
+                if let Some(drag_idx) = self.gen_order_drag {
+                    let pointer_pos = ui.input(|inp| inp.pointer.hover_pos());
+                    let released = ui.input(|inp| inp.pointer.any_released());
+                    let mut found_target = false;
+                    if let Some(pos) = pointer_pos {
+                        for (i, rect) in row_rects.iter().enumerate() {
+                            if i == drag_idx { continue; }
+                            if rect.contains(pos) {
+                                let before = pos.y < rect.center().y;
+                                let y = if before { rect.top() } else { rect.bottom() };
+                                ui.painter().hline(rect.x_range(), y, egui::Stroke::new(2.0_f32, Color32::YELLOW));
+                                if released {
+                                    let target = if before { i } else { i + 1 };
+                                    let adjusted = if drag_idx < target { target - 1 } else { target };
+                                    drag_move = Some((drag_idx, adjusted));
+                                }
+                                found_target = true;
+                                break;
+                            }
+                        }
+                        if !found_target && released {
+                            if let Some(last) = row_rects.last() {
+                                if pos.y > last.bottom() {
+                                    let target = order_len;
+                                    let adjusted = if drag_idx < target { target - 1 } else { target };
+                                    drag_move = Some((drag_idx, adjusted));
+                                    found_target = true;
+                                }
+                            }
+                        }
+                    }
+                    if released && !found_target && drag_move.is_none() {
+                        // puszczono poza listą – anuluj
+                        self.gen_order_drag = None;
+                    }
+                }
+                if let Some((from, to)) = drag_move {
+                    if from != to {
+                        let item = order.remove(from);
+                        let insert_at = to.min(order.len());
+                        order.insert(insert_at, item);
+                    }
+                    self.gen_order_drag = None;
+                } else if self.gen_order_drag.is_some() && ui.input(|inp| inp.pointer.any_released()) {
+                    // puszczono bez celu – anuluj jeśli nie nad żadnym wierszem
+                    let pointer_pos = ui.input(|inp| inp.pointer.hover_pos());
+                    let any_hover = pointer_pos.map(|p| row_rects.iter().any(|r| r.contains(p))).unwrap_or(false);
+                    let below_last = pointer_pos.map(|p| row_rects.last().map(|r| p.y > r.bottom()).unwrap_or(false)).unwrap_or(false);
+                    if !any_hover && !below_last {
+                        self.gen_order_drag = None;
+                    }
+                }
+                if let Some((a,b)) = swap_via_buttons {
+                    if a < order.len() && b < order.len() {
+                        order.swap(a,b);
+                    }
+                }
+                ui.separator();
+                if ui.small_button(tr(lang, "⟲ Domyślnie")).on_hover_text(tr(lang, "Maska → obszary po kolei → Wycinanie (kolory) na końcu")).clicked() {
+                    let mut def = vec![forest_core::preset::GenStep::Mask];
+                    for idx in 0..self.project.areas.len() {
+                        def.push(forest_core::preset::GenStep::Area(idx));
+                    }
+                    def.push(forest_core::preset::GenStep::Cut);
+                    *order = def;
+                }
+                // podsumowanie tekstowe
+                let seq: Vec<String> = order.iter().map(|p| {
+                    match p {
+                        forest_core::preset::GenStep::Mask => tr(lang, "Maska"),
+                        forest_core::preset::GenStep::Cut => tr(lang, "Wycinanie (kolory)"),
+                        forest_core::preset::GenStep::Areas => tr(lang, "Obszary"),
+                        forest_core::preset::GenStep::Area(idx) => {
+                            areas_snap.get(*idx).map(|a| a.label.clone()).unwrap_or_else(|| format!("Obszar #{idx}"))
+                        }
+                    }
+                }).collect();
+                ui.small(format!("→ {}", seq.join(" → ")));
+            });
+
 
         CollapsingHeader::new(tr(lang, "Granica lasu"))
             .default_open(false)
@@ -3757,6 +3923,20 @@ ui.text_edit_singleline(&mut sp.label);
                                 to_remove = Some(ai);
                             }
                         });
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut a.cutting, tr(lang, "✂️ Wycinanie"))
+                                .on_hover_text(tr(lang, "Gdy włączone, obszar działa TYLKO jako wycinanie – usuwa obiekty z wnętrza (nie generuje drzew). Inne opcje znikają."))
+                                .changed() && a.cutting {
+                                self.info = Some(format!("Obszar '{}' ustawiono jako wycinanie – będzie usuwać obiekty.", a.label));
+                            }
+                            ui.small(tr(lang, "(wycina obiekty)"));
+                        });
+                        if a.cutting {
+                            ui.colored_label(Color32::from_rgb(255,120,40), tr(lang, "✂ Tryb wycinania — obszar usuwa obiekty z wnętrza (nie generuje)."));
+                            ui.small(tr(lang, "Usuwa obiekty z maski i innych obszarów wygenerowane PRZED etapem wycinania (kolejność w ⚙ Kolejność generowania)."));
+                            let ha = forest_core::scatter::polygon_area_m2(&a.polygon) / 10_000.0;
+                            ui.small(format!("{} ha | pkt: {} | dziury: {}", format!("{:.1}", ha), a.polygon.len(), a.holes.len()));
+                        } else {
                         // kopiowanie ustawień z innego obszaru
                         if area_labels.len() > 1 {
                             ui.horizontal(|ui| {
@@ -3985,6 +4165,7 @@ ui.text_edit_singleline(&mut sp.label);
                                 ));
                             }
                         }
+                        } // end else (!cutting)
                     });
                 }
                 if let Some((src, dst)) = pending_copy {
@@ -4054,6 +4235,17 @@ ui.text_edit_singleline(&mut sp.label);
                     if self.selected_areas.is_empty() {
                         self.show_only_selected = false;
                     }
+                    // kolejność generowania: usuń wpis i przesuń indeksy
+                    let mut new_order = Vec::new();
+                    for e in self.project.generation_order.drain(..) {
+                        match e {
+                            forest_core::preset::GenStep::Area(idx) if idx == i => {},
+                            forest_core::preset::GenStep::Area(idx) if idx > i => new_order.push(forest_core::preset::GenStep::Area(idx - 1)),
+                            other => new_order.push(other),
+                        }
+                    }
+                    self.project.generation_order = new_order;
+                    self.project.sanitize();
                     self.refresh_intersection_marks();
                 }
                 if !self.project.areas.is_empty()
@@ -4067,6 +4259,8 @@ ui.text_edit_singleline(&mut sp.label);
                     self.intersection_marks.clear();
                     self.selected_areas.clear();
                     self.show_only_selected = false;
+                    self.project.generation_order = vec![forest_core::preset::GenStep::Mask, forest_core::preset::GenStep::Cut];
+                    self.project.sanitize();
                 }
             });
 
@@ -4491,7 +4685,8 @@ ui.text_edit_singleline(&mut sp.label);
             if a.polygon.len() < 2 {
                 continue;
             }
-            let col = area_colors[ai % area_colors.len()];
+            let base_col = area_colors[ai % area_colors.len()];
+            let col = if a.cutting { Color32::from_rgb(255, 60, 60) } else { base_col };
             let mut pts: Vec<egui::Pos2> =
                 a.polygon.iter().map(|c| to_screen(c[0], c[1])).collect();
             pts.push(pts[0]); // domknięcie
@@ -4502,10 +4697,21 @@ ui.text_edit_singleline(&mut sp.label);
                     egui::Stroke::new(5.0_f32, Color32::WHITE.gamma_multiply(0.8)),
                 ));
             }
-            painter.add(egui::Shape::line(
-                pts.clone(),
-                egui::Stroke::new(2.0_f32, col),
-            ));
+            if a.cutting {
+                // przerywana linia dla wycinania
+                for w in pts.windows(2) {
+                    let a = w[0]; let b = w[1];
+                    painter.line_segment([a,b], egui::Stroke::new(2.5_f32, col));
+                    // małe X w środku odcinka
+                    let mid = egui::pos2((a.x+b.x)*0.5, (a.y+b.y)*0.5);
+                    painter.circle_filled(mid, 2.0, Color32::WHITE.gamma_multiply(0.6));
+                }
+            } else {
+                painter.add(egui::Shape::line(
+                    pts.clone(),
+                    egui::Stroke::new(2.0_f32, col),
+                ));
+            }
             for p in &pts[..pts.len() - 1] {
                 painter.circle_filled(*p, 3.0, col);
             }
@@ -4525,10 +4731,11 @@ ui.text_edit_singleline(&mut sp.label);
             // etykieta w środku ciężkości obrysu
             let cx = a.polygon.iter().map(|p| p[0]).sum::<f64>() / a.polygon.len() as f64;
             let cy = a.polygon.iter().map(|p| p[1]).sum::<f64>() / a.polygon.len() as f64;
+            let disp_label = if a.cutting { format!("✂ {}", a.label) } else { a.label.clone() };
             painter.text(
                 to_screen(cx, cy),
                 egui::Align2::CENTER_CENTER,
-                &a.label,
+                disp_label,
                 egui::FontId::proportional(13.0),
                 col,
             );

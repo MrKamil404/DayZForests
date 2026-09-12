@@ -92,6 +92,10 @@ pub struct AreaDef {
     /// None lub puste próbki = brak filtra (normalne generowanie).
     #[serde(default)]
     pub color_filter: Option<ColorFilter>,
+    /// Wycinanie: gdy true, obszar nie generuje drzew — tylko wycina
+    /// obiekty leżące wewnątrz poligonu (poza dziurami). Inne opcje są wtedy ukryte.
+    #[serde(default)]
+    pub cutting: bool,
 }
 
 /// Pas graniczny lasu — krzewy/podrost sadzone wzdłuż krawędzi stref i obszarów.
@@ -141,6 +145,58 @@ impl Default for EdgeSettings {
 
 fn default_true() -> bool {
     true
+}
+
+/// Kolejność etapów generowania — konfigurowalna w lewym panelu Ustawień.
+/// `Area(i)` oznacza i-ty obszar (generowanie jeśli `cutting==false`, wycinanie jeśli `true`).
+/// Wariant `Areas` jest legacy (sprzed per-obszarowej kolejności) i migrowany w `sanitize`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GenStep {
+    /// Generowanie z maski (strefy kolorów).
+    Mask,
+    /// Wycinanie po kolorach maski (`cut_zones`).
+    #[serde(alias = "color_cut")]
+    Cut,
+    /// Legacy: zbiorczy wpis "obszary" — rozwijany do `Area(i)` dla każdego obszaru.
+    #[serde(alias = "areas")]
+    Areas,
+    /// Pojedynczy obszar `areas[index]`.
+    Area(usize),
+}
+
+impl GenStep {
+    pub fn label_generic(&self) -> String {
+        match self {
+            GenStep::Mask => "Maska".into(),
+            GenStep::Cut => "Wycinanie (kolory)".into(),
+            GenStep::Areas => "Obszary".into(),
+            GenStep::Area(i) => format!("Obszar #{i}"),
+        }
+    }
+    /// Etykieta do wyświetlenia w UI — dla `Area(i)` użyj nazwy obszaru jeśli dostępna.
+    pub fn display_label(&self, areas: &[AreaDef]) -> String {
+        match self {
+            GenStep::Mask => "Maska".into(),
+            GenStep::Cut => "Wycinanie (kolory)".into(),
+            GenStep::Areas => "Obszary".into(),
+            GenStep::Area(i) => {
+                if let Some(a) = areas.get(*i) {
+                    let kind = if a.cutting { "✂" } else { "🌲" };
+                    format!("{kind} {} ", a.label)
+                } else {
+                    format!("Obszar #{i} (brak)")
+                }
+            }
+        }
+    }
+}
+
+// alias dla kompatybilności
+pub type GenPhase = GenStep;
+
+fn default_generation_order() -> Vec<GenStep> {
+    vec![GenStep::Mask, GenStep::Cut]
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -219,6 +275,10 @@ pub struct ForestProject {
     /// Ustawienia eksportu PNG (rozmiar i kształt kropek).
     #[serde(default)]
     pub png_settings: PngSettings,
+
+    /// Kolejność etapów generowania: maska / wycinanie kolory / pojedyncze obszary.
+    #[serde(default = "default_generation_order")]
+    pub generation_order: Vec<GenStep>,
 }
 
 /// Tryb renderowania PNG.
@@ -309,6 +369,7 @@ impl Default for ForestProject {
             paths: ProjectPaths::default(),
             layer_library: crate::layers::LayerLibrary::default(),
             png_settings: PngSettings::default(),
+            generation_order: default_generation_order(),
         }
     }
 }
@@ -334,8 +395,8 @@ impl ForestProject {
         }
         self.zones.retain(|z| !z.species_weights.is_empty());
         for a in &mut self.areas {
-            // obszary bez wag mogą czekać na przypisanie presetu — nie usuwamy
-            if !a.species_weights.is_empty() {
+            // obszary-wycinanie nie mają wag — nie filtrujemy
+            if !a.cutting && !a.species_weights.is_empty() {
                 a.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
             }
             a.holes.retain(|h| h.len() >= 3);
@@ -346,6 +407,62 @@ impl ForestProject {
                 .species_weights
                 .retain(|(i, w)| *i < n && *w > 0.0);
         }
+        // --- generation_order: per-obszarowa, dokładna kolejność ---
+        // 1) rozwiń legacy Areas -> Area(i) dla każdego obszaru
+        let mut expanded: Vec<GenStep> = Vec::new();
+        for e in self.generation_order.clone() {
+            match e {
+                GenStep::Areas => {
+                    for i in 0..self.areas.len() {
+                        expanded.push(GenStep::Area(i));
+                    }
+                }
+                other => expanded.push(other),
+            }
+        }
+        // 2) usuń duplikaty i niepoprawne indeksy, zachowując kolejność
+        let mut seen_mask = false;
+        let mut seen_cut = false;
+        let mut seen_area: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut clean: Vec<GenStep> = Vec::new();
+        for e in expanded {
+            match e {
+                GenStep::Mask => {
+                    if !seen_mask { seen_mask = true; clean.push(e); }
+                }
+                GenStep::Cut => {
+                    if !seen_cut { seen_cut = true; clean.push(e); }
+                }
+                GenStep::Area(i) => {
+                    if i < self.areas.len() && seen_area.insert(i) {
+                        clean.push(e);
+                    }
+                }
+                GenStep::Areas => {}
+            }
+        }
+        // 3) dodaj brakujące Mask/Cut
+        if !seen_mask { clean.insert(0, GenStep::Mask); }
+        if !seen_cut {
+            // Cut domyślnie na końcu (po wszystkich obszarach)
+            clean.push(GenStep::Cut);
+        }
+        // 4) dodaj brakujące Area(i)
+        for i in 0..self.areas.len() {
+            if !seen_area.contains(&i) {
+                // wstaw przed Cut jeśli istnieje, inaczej na końcu
+                if let Some(pos) = clean.iter().position(|e| matches!(e, GenStep::Cut)) {
+                    clean.insert(pos, GenStep::Area(i));
+                } else {
+                    clean.push(GenStep::Area(i));
+                }
+            }
+        }
+        // jeśli brak obszarów, zostaje [Mask, Cut]
+        if clean.is_empty() {
+            clean = default_generation_order();
+        }
+        self.generation_order = clean;
     }
 
     /// Walidacja przed generowaniem; zwraca listę problemów.
@@ -379,6 +496,33 @@ impl ForestProject {
             }
             if a.polygon.len() < 3 {
                 return Err(format!("Obszar {}: poligon wymaga >= 3 punktów", ai + 1));
+            }
+            // wycinanie: nie wymaga gęstości ani gatunków, tylko poprawnego poligonu
+            if a.cutting {
+                // sprawdź samoprzecięcia nawet dla wycinania
+                for (pi, pt) in a.polygon.iter().enumerate() {
+                    if !pt[0].is_finite() || !pt[1].is_finite() {
+                        return Err(format!("Obszar {}: punkt {pi} ma nieprawidłowe współrzędne", ai + 1));
+                    }
+                }
+                if let Some(ix) = crate::scatter::find_self_intersection(&a.polygon) {
+                    return Err(format!(
+                        "Obszar '{}' (wycinanie): obrys przecina sam siebie — odcinki #{}–#{} i #{}–#{} \
+                         krzyżują się w punkcie ({:.1}, {:.1}). Zobacz czerwony znacznik na mapie; \
+                         usuń lub przesuń wierzchołki tak, aby obrys był prostym wielokątem.",
+                        a.label, ix.seg_a, ix.seg_a + 1, ix.seg_b, ix.seg_b + 1, ix.point[0], ix.point[1]
+                    ));
+                }
+                for (hi, hole) in a.holes.iter().enumerate() {
+                    if let Some(ix) = crate::scatter::find_self_intersection(hole) {
+                        return Err(format!(
+                            "Obszar '{}' (wycinanie): dziura {} przecina samą siebie — odcinki #{}–#{} i #{}–#{} \
+                             krzyżują się w punkcie ({:.1}, {:.1}). Popraw obrys dziury.",
+                            a.label, hi + 1, ix.seg_a, ix.seg_a + 1, ix.seg_b, ix.seg_b + 1, ix.point[0], ix.point[1]
+                        ));
+                    }
+                }
+                continue;
             }
             // obszar nieskonfigurowany (bez presetu) — legalny, generuje 0 obiektów
             if a.species_weights.is_empty() && a.density_per_ha <= 0.0 {
