@@ -4134,6 +4134,7 @@ ui.text_edit_singleline(&mut sp.label);
 
                         // granica tego obszaru (nadpisuje globalną)
                         let mut own = a.edges.is_some();
+                        let mut just_enabled_edge = false;
                         if ui
                             .checkbox(&mut own, tr(lang, "Własna granica"))
                             .on_hover_text(
@@ -4146,12 +4147,33 @@ ui.text_edit_singleline(&mut sp.label);
                             } else {
                                 None
                             };
+                            just_enabled_edge = own;
                         }
                         match a.edges.as_mut() {
                             Some(ge) => {
-                                ui.indent(format!("aedge{ai}"), |ui| {
+                                egui::CollapsingHeader::new(format!(
+                                    "{}: {:.0} m, {:.0}/ha",
+                                    tr(lang, "Granica lasu"),
+                                    ge.band_width_m,
+                                    ge.density_per_ha,
+                                ))
+                                .id_source(format!("aedge{ai}"))
+                                .default_open(false)
+                                .open(if just_enabled_edge {
+                                    Some(true)
+                                } else {
+                                    None
+                                })
+                                .show(ui, |ui| {
                                     ui.small("⟲ przywraca wartości z globalnej granicy");
-                                    ui_edge_settings(ui, self.lang, &format!("A{ai}"), ge, &global_edges_snap, &species_snap_a);
+                                    ui_edge_settings(
+                                        ui,
+                                        self.lang,
+                                        &format!("A{ai}"),
+                                        ge,
+                                        &global_edges_snap,
+                                        &species_snap_a,
+                                    );
                                 });
                             }
                             None => {
