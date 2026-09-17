@@ -332,6 +332,21 @@ const DICT: &[Entry] = &[
         "Nur ausgewählte ({0})",
     ),
     (
+        "Włącz zaznaczone ({0})",
+        "Enable selected ({0})",
+        "Ausgewählte aktivieren ({0})",
+    ),
+    (
+        "Wyłącz zaznaczone ({0})",
+        "Disable selected ({0})",
+        "Ausgewählte deaktivieren ({0})",
+    ),
+    (
+        "Włącza/wyłącza udział zaznaczonych obszarów w generowaniu",
+        "Toggles whether selected areas take part in generation",
+        "Schaltet die Teilnahme ausgewählter Bereiche an der Generierung um",
+    ),
+    (
         "Szukaj gatunku / modelu...",
         "Search species / model...",
         "Art / Modell suchen...",

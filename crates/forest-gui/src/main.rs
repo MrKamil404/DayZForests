@@ -4040,6 +4040,29 @@ ui.text_edit_singleline(&mut sp.label);
                     );
                     let n_sel = self.selected_areas.len();
                     if n_sel > 0 {
+                        // przełącznik aktywności zaznaczonych obszarów
+                        let all_on = self.selected_areas.iter().all(|i| {
+                            self.project.areas.get(*i).is_some_and(|a| a.enabled)
+                        });
+                        let toggle_label = if all_on {
+                            tf(lang, "Wyłącz zaznaczone ({0})", &[&n_sel.to_string()])
+                        } else {
+                            tf(lang, "Włącz zaznaczone ({0})", &[&n_sel.to_string()])
+                        };
+                        if ui
+                            .button(toggle_label)
+                            .on_hover_text(tr(
+                                lang,
+                                "Włącza/wyłącza udział zaznaczonych obszarów w generowaniu",
+                            ))
+                            .clicked()
+                        {
+                            for i in &self.selected_areas {
+                                if let Some(a) = self.project.areas.get_mut(*i) {
+                                    a.enabled = !all_on;
+                                }
+                            }
+                        }
                         if ui
                             .add(egui::Checkbox::new(
                                 &mut self.show_only_selected,
@@ -4092,7 +4115,11 @@ ui.text_edit_singleline(&mut sp.label);
                     }
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
-                            let col = [Color32::from_rgb(255, 170, 40), Color32::from_rgb(60, 210, 255)][ai % 2];
+                            let col = if !a.enabled {
+                                Color32::GRAY
+                            } else {
+                                [Color32::from_rgb(255, 170, 40), Color32::from_rgb(60, 210, 255)][ai % 2]
+                            };
                             let (_r, resp) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                             ui.painter_at(resp.rect).circle_filled(resp.rect.center(), 4.0, col);
                             ui.text_edit_singleline(&mut a.label);
@@ -5112,7 +5139,13 @@ ui.text_edit_singleline(&mut sp.label);
                 continue;
             }
             let base_col = area_colors[ai % area_colors.len()];
-            let col = if a.cutting { Color32::from_rgb(255, 60, 60) } else { base_col };
+            let col = if !a.enabled {
+                Color32::GRAY
+            } else if a.cutting {
+                Color32::from_rgb(255, 60, 60)
+            } else {
+                base_col
+            };
             let mut pts: Vec<egui::Pos2> =
                 a.polygon.iter().map(|c| to_screen(c[0], c[1])).collect();
             pts.push(pts[0]); // domknięcie
