@@ -199,6 +199,7 @@ const DICT: &[Entry] = &[
     ("Mnożnik odstępów:", "Spacing multiplier:", "Abstands-Multiplikator:"),
     ("Skala polan [m]:", "Clearing scale [m]:", "Lichtungsskala [m]:"),
     ("Siła polan:", "Clearing strength:", "Lichtungsstärke:"),
+    ("Skala obiektów:", "Object scale:", "Objektmaßstab:"),
     // --- wycinanie ---
     (
         "✂ Wycinanie (kolor + bufor)",

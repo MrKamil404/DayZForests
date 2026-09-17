@@ -310,6 +310,10 @@ fn default_generation_order() -> Vec<GenStep> {
     vec![GenStep::Mask, GenStep::Cut]
 }
 
+fn default_scale_bound() -> f32 {
+    1.0
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ProjectPaths {
     #[serde(default)]
@@ -335,6 +339,14 @@ pub struct ForestProject {
 
     /// Mnożnik odstępów Poisson-disk (>1 = rzadziej).
     pub spacing_multiplier: f64,
+    /// Globalny zakres randomizacji skali stawianych obiektów.
+    /// Dla każdego obiektu losowany jest mnożnik z tego zakresu
+    /// i mnożony przez skalę wylosowaną z zakresu gatunku.
+    /// 1.0..1.0 = brak dodatkowej randomizacji (tylko skala gatunku).
+    #[serde(default = "default_scale_bound")]
+    pub scale_min: f32,
+    #[serde(default = "default_scale_bound")]
+    pub scale_max: f32,
     /// Długość fali szumu polan w metrach (0 = wyłączone).
     pub clearing_scale_m: f64,
     /// Siła polan 0..0.95 (jaka część obszaru ma być prześwitem).
@@ -461,6 +473,8 @@ impl Default for ForestProject {
             northing_offset: 0.0,
             seed: 1337,
             spacing_multiplier: 1.0,
+            scale_min: 1.0,
+            scale_max: 1.0,
             clearing_scale_m: 350.0,
             clearing_strength: 0.35,
             min_altitude: None,
@@ -500,6 +514,12 @@ impl ForestProject {
 
     /// Usuwa z stref/obszarów odwołania do nieistniejących gatunków.
     pub fn sanitize(&mut self) {
+        // Globalny zakres skali: przytnij do sensownych granic i napraw kolejność.
+        self.scale_min = self.scale_min.clamp(0.1, 5.0);
+        self.scale_max = self.scale_max.clamp(0.1, 5.0);
+        if self.scale_min > self.scale_max {
+            std::mem::swap(&mut self.scale_min, &mut self.scale_max);
+        }
         let n = self.species.len();
         for z in &mut self.zones {
             z.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
@@ -596,6 +616,12 @@ impl ForestProject {
         }
         if self.zones.is_empty() && self.areas.is_empty() {
             return Err("Brak stref lasu (dodaj kolory z maski albo narysuj obszary)".into());
+        }
+        if self.scale_min <= 0.0 || self.scale_max <= 0.0 {
+            return Err("Zakres skali musi być > 0".into());
+        }
+        if self.scale_min > self.scale_max {
+            return Err("Zakres skali: minimum nie może być większe od maksimum".into());
         }
         for (zi, z) in self.zones.iter().enumerate() {
             if z.density_per_ha <= 0.0 {
@@ -760,6 +786,58 @@ mod tests {
     fn validate_catches_empty_zones() {
         let p = ForestProject::default();
         assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn global_scale_defaults_to_neutral() {
+        let p = ForestProject::default();
+        assert_eq!((p.scale_min, p.scale_max), (1.0, 1.0));
+        // stare projekty bez tych pól wczytują się jako neutralne
+        let legacy: ForestProject = serde_json::from_str(
+            r#"{"version":1,"map_size_m":1000.0,"easting_offset":200000.0,
+                "northing_offset":0.0,"seed":1,"spacing_multiplier":1.0,
+                "clearing_scale_m":0.0,"clearing_strength":0.0,
+                "min_altitude":null,"max_altitude":null,"max_slope_deg":null,
+                "edge_padding_m":0.0,"color_tolerance":12,"exclusion_colors":[],
+                "elevation_mode":"relative_zero","species":[],"zones":[]}"#,
+        )
+        .unwrap();
+        assert_eq!((legacy.scale_min, legacy.scale_max), (1.0, 1.0));
+    }
+
+    #[test]
+    fn sanitize_repairs_scale_range() {
+        let mut p = ForestProject::default();
+        p.scale_min = 1.5;
+        p.scale_max = 0.8;
+        p.sanitize();
+        assert_eq!((p.scale_min, p.scale_max), (0.8, 1.5));
+        p.scale_min = -2.0;
+        p.scale_max = 99.0;
+        p.sanitize();
+        assert!((p.scale_min - 0.1).abs() < 1e-6);
+        assert!((p.scale_max - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn validate_rejects_bad_scale_range() {
+        // strefa potrzebna, żeby walidacja doszła do sprawdzenia skali
+        let mut p = ForestProject::default();
+        p.zones.push(ZoneDef {
+            color: Rgb8([0, 128, 0]),
+            label: "Las".into(),
+            density_per_ha: 100.0,
+            species_weights: vec![(0, 1.0)],
+            preset_mix: Vec::new(),
+        });
+        assert!(p.validate().is_ok());
+        p.scale_min = 0.0;
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("skali"), "{err}");
+        p.scale_min = 1.5;
+        p.scale_max = 1.0;
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("skali"), "{err}");
     }
 
     #[test]

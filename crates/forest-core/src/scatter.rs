@@ -778,14 +778,41 @@ fn run_dart(
             let sp = &env.project.species[si];
 
             grid.entry(world_to_cell(p, cell)).or_default().push(p);
+            // Kolejność losowań jak dotąd: yaw, pitch, roll, skala gatunku…
+            let yaw = rng.gen_range(0.0..360.0);
+            let pitch =
+                rng.gen_range(-f64::from(sp.tilt_max_deg)..f64::from(sp.tilt_max_deg));
+            let roll =
+                rng.gen_range(-f64::from(sp.tilt_max_deg)..f64::from(sp.tilt_max_deg));
+            let base_scale =
+                rng.gen_range(f64::from(sp.scale_min)..=f64::from(sp.scale_max));
+            // …plus globalny mnożnik skali. Neutralny 1.0..1.0 nie rusza RNG,
+            // więc stare projekty dają bit-identyczne wyniki.
+            let glo_min = f64::from(env.project.scale_min);
+            let glo_max = f64::from(env.project.scale_max);
+            let global_mult = if (glo_min - 1.0).abs() < 1e-9 && (glo_max - 1.0).abs() < 1e-9
+            {
+                1.0
+            } else {
+                let (lo, hi) = if glo_min <= glo_max {
+                    (glo_min, glo_max)
+                } else {
+                    (glo_max, glo_min)
+                };
+                if (hi - lo).abs() < f64::EPSILON {
+                    lo
+                } else {
+                    rng.gen_range(lo..=hi)
+                }
+            };
             objects.push(PlacedObject {
                 model: sp.model.clone(),
                 x: wx,
                 y: wy,
-                yaw: rng.gen_range(0.0..360.0),
-                pitch: rng.gen_range(-f64::from(sp.tilt_max_deg)..f64::from(sp.tilt_max_deg)),
-                roll: rng.gen_range(-f64::from(sp.tilt_max_deg)..f64::from(sp.tilt_max_deg)),
-                scale: rng.gen_range(f64::from(sp.scale_min)..=f64::from(sp.scale_max)),
+                yaw,
+                pitch,
+                roll,
+                scale: base_scale * global_mult,
                 elevation,
                 zone_index: source_index,
                 species_index: si,
@@ -1798,6 +1825,70 @@ mod tests {
         let nb = stats.per_species[1].1 as f64;
         let ratio = na / nb;
         assert!(ratio > 2.25 && ratio < 3.75, "ratio={ratio} (na={na}, nb={nb})");
+    }
+
+    #[test]
+    fn neutral_scale_keeps_species_range_and_determinism() {
+        let green = Rgb8([0, 200, 0]);
+        let proj = zone_project(&[green]); // scale_min/max = 1.0 (neutralne)
+        let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
+        let (o1, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
+        assert!(!o1.is_empty());
+        for o in &o1 {
+            assert!(
+                (0.9..=1.1).contains(&o.scale),
+                "skala poza zakresem gatunku: {}",
+                o.scale
+            );
+        }
+        // bit-identyczne skale przy powtórce (RNG nietknięte przez mnożnik)
+        let (o2, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
+        for (a, b) in o1.iter().zip(&o2) {
+            assert!((a.scale - b.scale).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn global_scale_range_multiplies_species_scale() {
+        let green = Rgb8([0, 200, 0]);
+        let mut proj = zone_project(&[green]); // gatunki 0.9..1.1
+        proj.scale_min = 0.5;
+        proj.scale_max = 2.0;
+        let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
+        let (objs, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
+        assert!(!objs.is_empty());
+        for o in &objs {
+            assert!(
+                (0.9 * 0.5..=1.1 * 2.0).contains(&o.scale),
+                "skala poza zakresem globalnym: {}",
+                o.scale
+            );
+        }
+        // rozrzut faktycznie szerszy niż sam gatunek (0.9..1.1)
+        let outside = objs
+            .iter()
+            .filter(|o| o.scale < 0.9 || o.scale > 1.1)
+            .count();
+        assert!(outside > 0, "globalny zakres nie rozszerzył skal");
+    }
+
+    #[test]
+    fn fixed_global_scale_doubles_every_object() {
+        let green = Rgb8([0, 200, 0]);
+        let base = zone_project(&[green]);
+        let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
+        let (o_base, _) =
+            generate(&base, Some(&mask), None, None, None, &|_| {}).unwrap();
+        let mut proj = zone_project(&[green]);
+        proj.scale_min = 2.0;
+        proj.scale_max = 2.0;
+        let (o2, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
+        assert_eq!(o_base.len(), o2.len());
+        for (a, b) in o_base.iter().zip(&o2) {
+            assert!((b.scale - 2.0 * a.scale).abs() < 1e-9, "{} vs {}", b.scale, a.scale);
+            // pozycje identyczne (mnożnik stały nie rusza RNG)
+            assert!((a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9);
+        }
     }
 
     #[test]

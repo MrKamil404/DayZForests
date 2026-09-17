@@ -117,6 +117,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         northing_offset: 0.0,
         seed: 20_260_821,
         spacing_multiplier: 1.0,
+        scale_min: 1.0,
+        scale_max: 1.0,
         clearing_scale_m: 420.0,
         clearing_strength: 0.35,
         min_altitude: Some(35.0),

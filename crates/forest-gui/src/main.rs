@@ -2880,6 +2880,19 @@ impl ForestApp {
                         p.clearing_strength = d.clearing_strength;
                     }
                 });
+                ui.separator();
+                horiz_tip(ui, "Globalny mnożnik skali losowany dla każdego obiektu i mnożony przez skalę gatunku (1.0..1.0 = tylko skala gatunku)", |ui| {
+                    let m = (p.scale_min - d.scale_min).abs() > 1e-9
+                        || (p.scale_max - d.scale_max).abs() > 1e-9;
+                    lbl_mod(ui, tr(lang, "Skala obiektów:"), m);
+                    ui.add(egui::DragValue::new(&mut p.scale_min).speed(0.01).clamp_range(0.1..=5.0));
+                    ui.label("..");
+                    ui.add(egui::DragValue::new(&mut p.scale_max).speed(0.01).clamp_range(0.1..=5.0));
+                    if reset_btn(ui, m) {
+                        p.scale_min = d.scale_min;
+                        p.scale_max = d.scale_max;
+                    }
+                });
             });
 
         // Ustawienia eksportu PNG

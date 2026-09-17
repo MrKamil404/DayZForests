@@ -85,7 +85,8 @@ moje presety, obszary, wynik generowania ze statystyką per źródło).
    generowaniu. Ustawienia z pomarańczową etykietą mają ⟲ do wartości
    domyślnej obok pola.
 4. **Filtry / Rozrzut** → min./maks. wysokość, maks. spadek, tolerancja koloru,
-   mnożnik odstępów, skala i siła polan.
+   mnożnik odstępów, skala i siła polan oraz **globalny zakres skali obiektów**
+   (dodatkowy mnożnik losowany dla każdego drzewa, mnożony przez skalę gatunku).
 5. **▶ Generuj** → podgląd punktów na masce (kolor = gatunek), statystyki.
 6. **💾 Eksport TXT (TB)** → zapis pliku dla Terrain Buildera.
    **🖼 Eksport PNG (drzewa)** → przezroczysta warstwa drzew (kropki w kolorach
