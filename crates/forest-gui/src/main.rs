@@ -112,6 +112,8 @@ struct ForestApp {
     species_color_edit: Option<usize>,
     /// Obszar, dla którego pobierane są próbki kolorów z podkładu.
     sampling_area: Option<usize>,
+    /// Gdy Some — próbki idą do grupy kolorów tego wpisu miksu (nazwa presetu).
+    sampling_mix_preset: Option<String>,
     /// Wybrany źródłowy obszar do kopiowania ustawień (per obszar).
     area_copy_src: Vec<Option<usize>>,
 
@@ -135,6 +137,7 @@ struct ForestApp {
 
 /// Znormalizowany podgląd presetu (wbudowanego lub użytkownika).
 /// Znormalizowany podgląd presetu (wbudowanego lub użytkownika).
+#[derive(Clone)]
 struct PSnap {
     name: String,
     density_per_ha: f32,
@@ -193,6 +196,7 @@ impl ForestApp {
             zone_preset_search: String::new(),
             zone_color_edit: None,
             sampling_area: None,
+            sampling_mix_preset: None,
             area_copy_src: Vec::new(),
             species_color_edit: None,
             user_presets: Vec::new(),
@@ -317,6 +321,7 @@ impl ForestApp {
                         holes: area_holes,
                         polygon: outer.clone(),
                         cutting: false,
+                        ..Default::default()
                     });
                     self.area_copy_src.push(None);
                     added += 1;
@@ -411,6 +416,7 @@ impl ForestApp {
                 holes: holes_kept,
                 polygon: shift(&ia.outer),
                 cutting: ia.cutting.unwrap_or(false),
+                ..Default::default()
             });
             self.area_copy_src.push(None);
             added += 1;
@@ -452,6 +458,7 @@ impl ForestApp {
         self.draw_mode = false;
         self.draw_points.clear();
         self.sampling_area = None;
+        self.sampling_mix_preset = None;
         self.project.sanitize();
         self.refresh_intersection_marks();
         if let Err(e) = self.project.validate() {
@@ -731,6 +738,7 @@ impl ForestApp {
                     self.stats = None;
                     self.zone_color_edit = None;
                     self.sampling_area = None;
+                    self.sampling_mix_preset = None;
                     self.area_copy_src = vec![None; self.project.areas.len()];
                     self.editing_area = None;
                     self.editing_vertex = None;
@@ -890,6 +898,7 @@ impl ForestApp {
             holes: Vec::new(),
             polygon: std::mem::take(&mut self.draw_points),
             cutting: false,
+            ..Default::default()
         });
         self.area_copy_src.push(None);
         // dodaj nowy obszar do kolejności generowania (przed wycinanie kolorów)
@@ -1472,6 +1481,74 @@ fn compute_mix_snap(
         density_per_ha: density / total_share,
         weights: wmap.into_iter().filter(|(_, w)| *w > 0.0).collect(),
     })
+}
+
+fn bake_mix_entry(
+    e: &mut forest_core::preset::MixEntry,
+    presets: &[(String, PSnap)],
+    species: &[SpeciesDef],
+) {
+    let Some((_, snap)) = presets.iter().find(|(n, _)| n == &e.name) else {
+        return;
+    };
+    e.density_per_ha = snap.density_per_ha;
+    e.species_weights = snap
+        .weights
+        .iter()
+        .filter_map(|(model, w)| {
+            species
+                .iter()
+                .position(|s| s.model.eq_ignore_ascii_case(model))
+                .map(|idx| (idx, *w))
+        })
+        .collect();
+}
+
+fn mix_pairs(mix: &[forest_core::preset::MixEntry]) -> Vec<(String, f32)> {
+    mix.iter().map(|e| (e.name.clone(), e.share)).collect()
+}
+
+fn ui_color_filter_body(
+    ui: &mut egui::Ui,
+    lang: Lang,
+    cf: &mut forest_core::preset::ColorFilter,
+    sat_missing: bool,
+) {
+    if !cf.samples.is_empty() && sat_missing {
+        ui.colored_label(ORANGE_MOD, tr(lang, "⚠ Brak podkładu — filtr nie zadziała"));
+    }
+    let mut to_remove: Option<usize> = None;
+    for (si_, sm) in cf.samples.iter().enumerate() {
+        let [r, g, b] = sm.0;
+        ui.horizontal(|ui| {
+            let (_rect, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+            ui.painter_at(resp.rect).rect_filled(
+                resp.rect,
+                2.0,
+                Color32::from_rgb(r, g, b),
+            );
+            ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("✖").clicked() {
+                    to_remove = Some(si_);
+                }
+            });
+        });
+    }
+    if let Some(i) = to_remove {
+        cf.samples.remove(i);
+    }
+    ui.horizontal(|ui| {
+        ui.label(tr(lang, "Tolerancja koloru:"));
+        ui.add(
+            egui::DragValue::new(&mut cf.tolerance)
+                .speed(1.0)
+                .clamp_range(0..=255),
+        );
+        if ui.button(tr(lang, "Wyczyść")).clicked() {
+            cf.samples.clear();
+        }
+    });
 }
 
 // --- pola ustawień z indywidualnym przywracaniem domyślnych -------------------
@@ -3998,16 +4075,226 @@ ui.text_edit_singleline(&mut sp.label);
                         });
                         // 🧩 miks presetów na tym obszarze
                         ui.indent(format!("amix{ai}"), |ui| {
-                            let changed = ui_mix_rows(
-                                ui,
-                                lang,
-                                &format!("area{ai}"),
-                                &mut a.preset_mix,
-                                &preset_list_a,
-                            );
+                            for e in a.preset_mix.iter_mut() {
+                                if e.species_weights.is_empty() {
+                                    bake_mix_entry(e, &preset_list_a, &species_snap_a);
+                                }
+                            }
+                            if ui
+                                .checkbox(
+                                    &mut a.mix_spatial,
+                                    tr(lang, "Mieszanie presetów (Perlin + grupy kolorów)"),
+                                )
+                                .on_hover_text(tr(
+                                    lang,
+                                    "Łatki Perlin między zaznaczonymi presetami. Odznacz preset, aby generował się standardowo (równomiernie na całym obszarze). Każdy preset w mieszaniu może mieć własną grupę kolorów z podkładu.",
+                                ))
+                                .changed()
+                                && a.mix_spatial
+                            {
+                                for e in a.preset_mix.iter_mut() {
+                                    bake_mix_entry(e, &preset_list_a, &species_snap_a);
+                                }
+                            }
+                            if a.mix_spatial {
+                                ui.horizontal(|ui| {
+                                    ui.label(tr(lang, "Skala łat [m]:"));
+                                    ui.add(
+                                        egui::DragValue::new(&mut a.mix_scale_m)
+                                            .speed(5.0)
+                                            .clamp_range(20.0..=2000.0),
+                                    );
+                                    ui.small(tr(lang, "(większa = większe plamy jednego presetu)"));
+                                });
+                            }
+
+                            let mix_on = a.mix_spatial;
+                            let mut changed = false;
+                            let mut remove: Option<usize> = None;
+                            let n_mix = a.preset_mix.len();
+                            for i in 0..n_mix {
+                                let density = preset_list_a
+                                    .iter()
+                                    .find(|(n, _)| n == &a.preset_mix[i].name)
+                                    .map(|(_, s)| s.density_per_ha);
+                                ui.horizontal(|ui| {
+                                    if mix_on {
+                                        let was = a.preset_mix[i].spatial;
+                                        ui.add(egui::Checkbox::without_text(
+                                            &mut a.preset_mix[i].spatial,
+                                        ))
+                                        .on_hover_text(tr(
+                                            lang,
+                                            "Zaznaczone: w mieszaniu (łatki Perlin / grupa kolorów). Odznaczone: generuje się standardowo na całym obszarze.",
+                                        ));
+                                        if a.preset_mix[i].spatial != was {
+                                            changed = true;
+                                        }
+                                    }
+                                    ui.monospace(tr(lang, a.preset_mix[i].name.as_str()));
+                                    if let Some(d) = density {
+                                        ui.weak(format!("{d:.0}/ha"));
+                                    }
+                                    if mix_on && !a.preset_mix[i].spatial {
+                                        ui.small(tr(lang, "standardowo"));
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            let before = a.preset_mix[i].share;
+                                            ui.add(
+                                                egui::DragValue::new(&mut a.preset_mix[i].share)
+                                                    .speed(0.01)
+                                                    .clamp_range(0.05..=1.0)
+                                                    .suffix("×"),
+                                            );
+                                            if (a.preset_mix[i].share - before).abs() > f32::EPSILON
+                                            {
+                                                changed = true;
+                                            }
+                                            if ui.button("✖").clicked() {
+                                                remove = Some(i);
+                                                changed = true;
+                                            }
+                                        },
+                                    );
+                                });
+                                if mix_on && a.preset_mix[i].spatial {
+                                    let n_g = a.preset_mix[i]
+                                        .color_filter
+                                        .as_ref()
+                                        .map(|f| f.samples.len())
+                                        .unwrap_or(0);
+                                    let pname = a.preset_mix[i].name.clone();
+                                    ui.horizontal(|ui| {
+                                        let s_on = self.sampling_area == Some(ai)
+                                            && self.sampling_mix_preset.as_deref()
+                                                == Some(pname.as_str());
+                                        if ui
+                                            .button(if s_on {
+                                                "🎯 Pobieranie: WŁ"
+                                            } else {
+                                                "🎯"
+                                            })
+                                            .on_hover_text(tr(
+                                                lang,
+                                                "Pobierz grupę kolorów tego presetu z podkładu (Esc = koniec)",
+                                            ))
+                                            .clicked()
+                                        {
+                                            if s_on {
+                                                self.sampling_area = None;
+                                                self.sampling_mix_preset = None;
+                                            } else if self.sat_image.is_some() {
+                                                self.sampling_area = Some(ai);
+                                                self.sampling_mix_preset = Some(pname.clone());
+                                                self.draw_mode = false;
+                                                self.draw_points.clear();
+                                                self.editing_area = None;
+                                                self.editing_vertex = None;
+                                                self.info = Some(tr(
+                                                    lang,
+                                                    "Klikaj na podkładzie kolory dla tego presetu...",
+                                                ));
+                                            } else {
+                                                self.error = Some(tr(
+                                                    lang,
+                                                    "Najpierw wczytaj podkład satelitarny (📁 Pliki).",
+                                                ));
+                                            }
+                                        }
+                                        if s_on {
+                                            ui.colored_label(Color32::YELLOW, "●");
+                                        }
+                                    });
+                                    egui::CollapsingHeader::new(format!(
+                                        "{} {}",
+                                        tr(lang, "Grupa kolorów:"),
+                                        n_g
+                                    ))
+                                    .id_source(format!("mcg{ai}_{i}"))
+                                    .default_open(n_g > 0)
+                                    .show(ui, |ui| {
+                                        if let Some(cf) =
+                                            a.preset_mix[i].color_filter.as_mut()
+                                        {
+                                            ui_color_filter_body(
+                                                ui,
+                                                lang,
+                                                cf,
+                                                self.sat_image.is_none(),
+                                            );
+                                        } else {
+                                            ui.small(tr(
+                                                lang,
+                                                "(brak próbek — kliknij 🎯 i próbkuj na mapie)",
+                                            ));
+                                        }
+                                    });
+                                }
+                            }
+                            if let Some(i) = remove {
+                                if self.sampling_mix_preset.as_deref()
+                                    == Some(a.preset_mix[i].name.as_str())
+                                {
+                                    self.sampling_area = None;
+                                    self.sampling_mix_preset = None;
+                                }
+                                a.preset_mix.remove(i);
+                            }
+
+                            ui.horizontal(|ui| {
+                                ui.label(tr(lang, "Dodaj preset:"));
+                                let items: Vec<String> = preset_list_a
+                                    .iter()
+                                    .map(|(n, s)| {
+                                        format!("{}  ({:.0}/ha)", tr(lang, n), s.density_per_ha)
+                                    })
+                                    .collect();
+                                searchable_combo(
+                                    ui,
+                                    lang,
+                                    &format!("mix_add_area{ai}"),
+                                    tr(lang, "wybierz z listy..."),
+                                    170.0,
+                                    &items,
+                                    |ui, i| {
+                                        let (n, _snap) = &preset_list_a[i];
+                                        let already =
+                                            a.preset_mix.iter().any(|e| &e.name == n);
+                                        let label = if already {
+                                            format!("✓ {}", tr(lang, n))
+                                        } else {
+                                            items[i].clone()
+                                        };
+                                        if ui
+                                            .add_enabled(!already, egui::Button::new(label))
+                                            .clicked()
+                                        {
+                                            let mut e = forest_core::preset::MixEntry {
+                                                name: n.clone(),
+                                                share: 1.0,
+                                                spatial: true,
+                                                ..Default::default()
+                                            };
+                                            bake_mix_entry(&mut e, &preset_list_a, &species_snap_a);
+                                            a.preset_mix.push(e);
+                                            changed = true;
+                                        }
+                                    },
+                                );
+                                if a.preset_mix.len() > 1 && !mix_on {
+                                    ui.small(tr(
+                                        lang,
+                                        "(udziały → sumują się do dowolnej wartości — liczone proporcjonalnie)",
+                                    ));
+                                }
+                            });
+
                             if changed {
+                                let pairs = mix_pairs(&a.preset_mix);
                                 if let Some(snap) =
-                                    compute_mix_snap(&a.preset_mix, &preset_list_a)
+                                    compute_mix_snap(&pairs, &preset_list_a)
                                 {
                                     let mapped: Vec<(usize, f32)> = snap
                                         .weights
@@ -4026,16 +4313,33 @@ ui.text_edit_singleline(&mut sp.label);
                                         a.species_weights = mapped;
                                     }
                                 }
+                                for e in a.preset_mix.iter_mut() {
+                                    bake_mix_entry(e, &preset_list_a, &species_snap_a);
+                                }
                             }
                             if !a.preset_mix.is_empty() {
-                                ui.small(tf(
-                                    lang,
-                                    "Efekt: {0} szt/ha, {1} gatunków",
-                                    &[
-                                        &format!("{:.0}", a.density_per_ha),
-                                        &a.species_weights.len().to_string(),
-                                    ],
-                                ));
+                                if a.mix_spatial {
+                                    let n_sp = a
+                                        .preset_mix
+                                        .iter()
+                                        .filter(|e| e.spatial)
+                                        .count();
+                                    let n_st = a.preset_mix.len() - n_sp;
+                                    ui.small(tf(
+                                        lang,
+                                        "Mieszanie: {0} w łatych, {1} standardowo",
+                                        &[&n_sp.to_string(), &n_st.to_string()],
+                                    ));
+                                } else {
+                                    ui.small(tf(
+                                        lang,
+                                        "Efekt: {0} szt/ha, {1} gatunków",
+                                        &[
+                                            &format!("{:.0}", a.density_per_ha),
+                                            &a.species_weights.len().to_string(),
+                                        ],
+                                    ));
+                                }
                             }
                         });
 
@@ -4047,7 +4351,8 @@ ui.text_edit_singleline(&mut sp.label);
                             .map(|f| f.samples.len())
                             .unwrap_or(0);
                         ui.horizontal(|ui| {
-                            let s_on = self.sampling_area == Some(ai);
+                            let s_on = self.sampling_area == Some(ai)
+                                && self.sampling_mix_preset.is_none();
                             if ui
                                 .button(if s_on { "🎯 Pobieranie: WŁ" } else { "🎯" })
                                 .on_hover_text(
@@ -4058,8 +4363,10 @@ ui.text_edit_singleline(&mut sp.label);
                             {
                                 if s_on {
                                     self.sampling_area = None;
+                                    self.sampling_mix_preset = None;
                                 } else if self.sat_image.is_some() {
                                     self.sampling_area = Some(ai);
+                                    self.sampling_mix_preset = None;
                                     self.draw_mode = false;
                                     self.draw_points.clear();
                                     self.editing_area = None;
@@ -4085,48 +4392,7 @@ ui.text_edit_singleline(&mut sp.label);
                         .default_open(n_samp > 0)
                         .show(ui, |ui| {
                             if let Some(cf) = a.color_filter.as_mut() {
-                                if !cf.samples.is_empty() && self.sat_image.is_none() {
-                                    ui.colored_label(
-                                        ORANGE_MOD,
-                                        "⚠ Brak podkładu — filtr nie zadziała",
-                                    );
-                                }
-                                let mut to_remove: Option<usize> = None;
-                                for (si_, sm) in cf.samples.iter().enumerate() {
-                                    let [r, g, b] = sm.0;
-                                    ui.horizontal(|ui| {
-                                        let (_rect, resp) = ui
-                                            .allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                                        ui.painter_at(resp.rect).rect_filled(
-                                            resp.rect,
-                                            2.0,
-                                            Color32::from_rgb(r, g, b),
-                                        );
-                                        ui.monospace(format!("#{r:02X}{g:02X}{b:02X}"));
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                if ui.button("✖").clicked() {
-                                                    to_remove = Some(si_);
-                                                }
-                                            },
-                                        );
-                                    });
-                                }
-                                if let Some(i) = to_remove {
-                                    cf.samples.remove(i);
-                                }
-                                ui.horizontal(|ui| {
-                                    ui.label(tr(lang, "Tolerancja koloru:"));
-                                    ui.add(
-                                        egui::DragValue::new(&mut cf.tolerance)
-                                            .speed(1.0)
-                                            .clamp_range(0..=255),
-                                    );
-                                    if ui.button(tr(lang, "Wyczyść")).clicked() {
-                                        cf.samples.clear();
-                                    }
-                                });
+                                ui_color_filter_body(ui, lang, cf, self.sat_image.is_none());
                             } else {
                                 ui.small(tr(lang, "(brak próbek — kliknij 🎯 i próbkuj na mapie)"));
                             }
@@ -4203,6 +4469,8 @@ ui.text_edit_singleline(&mut sp.label);
                         dst_area.density_per_ha = src_clone.density_per_ha;
                         dst_area.species_weights = src_clone.species_weights;
                         dst_area.preset_mix = src_clone.preset_mix;
+                        dst_area.mix_spatial = src_clone.mix_spatial;
+                        dst_area.mix_scale_m = src_clone.mix_scale_m;
                         dst_area.edges = src_clone.edges;
                         dst_area.color_filter = src_clone.color_filter;
                         self.info = Some(tf(
@@ -4232,6 +4500,7 @@ ui.text_edit_singleline(&mut sp.label);
                     }
                     if self.sampling_area == Some(i) {
                         self.sampling_area = None;
+                        self.sampling_mix_preset = None;
                     } else if let Some(sa) = self.sampling_area {
                         if sa > i {
                             self.sampling_area = Some(sa - 1);
@@ -4278,6 +4547,7 @@ ui.text_edit_singleline(&mut sp.label);
                     self.editing_area = None;
                     self.editing_vertex = None;
                     self.sampling_area = None;
+                    self.sampling_mix_preset = None;
                     self.intersection_marks.clear();
                     self.selected_areas.clear();
                     self.show_only_selected = false;
@@ -4602,6 +4872,7 @@ ui.text_edit_singleline(&mut sp.label);
             );
             if esc {
                 self.sampling_area = None;
+                self.sampling_mix_preset = None;
             } else if clicked {
                 if let Some(hover) = resp.hover_pos() {
                     let wx = ((hover.x - origin.x) / scale) as f64;
@@ -4613,13 +4884,25 @@ ui.text_edit_singleline(&mut sp.label);
                             let sx = sx.min(sat.width - 1);
                             let sy = sy.min(sat.height - 1);
                             let color = sat.pixel(sx, sy);
+                            let mix_name = self.sampling_mix_preset.clone();
                             if let Some(a) = self.project.areas.get_mut(ai) {
-                                let cf = a.color_filter.get_or_insert_with(|| {
-                                    forest_core::preset::ColorFilter {
-                                        samples: Vec::new(),
-                                        tolerance: 60,
+                                let empty_cf = || forest_core::preset::ColorFilter {
+                                    samples: Vec::new(),
+                                    tolerance: 60,
+                                };
+                                let cf = if let Some(name) = mix_name.as_ref() {
+                                    if let Some(pos) =
+                                        a.preset_mix.iter().position(|e| e.name == *name)
+                                    {
+                                        a.preset_mix[pos]
+                                            .color_filter
+                                            .get_or_insert_with(empty_cf)
+                                    } else {
+                                        a.color_filter.get_or_insert_with(empty_cf)
                                     }
-                                });
+                                } else {
+                                    a.color_filter.get_or_insert_with(empty_cf)
+                                };
                                 cf.samples.push(color);
                                 self.info = Some(format!(
                                     "Próbka #{:02X}{:02X}{:02X} dodana (razem: {}). Esc = koniec.",
@@ -4633,6 +4916,7 @@ ui.text_edit_singleline(&mut sp.label);
                             self.error =
                                 Some("Brak podkładu satelitarnego — wczytaj go w 📁 Pliki.".into());
                             self.sampling_area = None;
+                            self.sampling_mix_preset = None;
                         }
                     }
                 }

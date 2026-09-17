@@ -515,6 +515,7 @@ mod tests {
             ]],
             polygon: vec![[10.0, 10.0], [110.0, 10.0], [110.0, 110.0], [10.0, 110.0]],
             cutting: false,
+            ..Default::default()
         };
         let json = super::areas_to_geojson(&[area], 200_000.0, 0.0).unwrap();
         let parsed = GeoJsonData::parse(&json).unwrap();
@@ -555,6 +556,7 @@ mod tests {
             ]],
             polygon: vec![[10.0, 10.0], [110.0, 10.0], [110.0, 110.0], [10.0, 110.0]],
             cutting: false,
+            ..Default::default()
         };
         let json = super::areas_to_geojson(&[area], 200_000.0, 0.0).unwrap();
         let imported = super::areas_from_geojson(&json).unwrap();

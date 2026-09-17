@@ -13,7 +13,7 @@ use rand::prelude::*;
 use crate::geojson::{point_in_polygon, point_ring_distance, GeoJsonData, Polygon};
 use crate::heightmap::AscHeightmap;
 use crate::mask::{MaskImage, Rgb8};
-use crate::preset::{ElevationMode, ForestProject};
+use crate::preset::{ElevationMode, ForestProject, MixEntry};
 
 #[derive(Clone, Debug)]
 pub struct PlacedObject {
@@ -558,6 +558,165 @@ fn make_wob(jag: f64, wl: f64, seed: u64) -> std::sync::Arc<dyn Fn(f64, f64) -> 
     })
 }
 
+fn sat_color_ok(
+    sat: Option<&MaskImage>,
+    size: f64,
+    x: f64,
+    y: f64,
+    samples: &[Rgb8],
+    tol: u32,
+) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+    let Some(s) = sat else {
+        return true;
+    };
+    let fx = (x / size) * f64::from(s.width);
+    let fy = ((size - y) / size) * f64::from(s.height);
+    let px_i = (fx.floor().max(0.0) as u32).min(s.width - 1);
+    let py_i = (fy.floor().max(0.0) as u32).min(s.height - 1);
+    let pc = s.pixel(px_i, py_i);
+    samples.iter().any(|sm| {
+        (i32::from(pc.0[0]) - i32::from(sm.0[0])).unsigned_abs() as u32
+            + (i32::from(pc.0[1]) - i32::from(sm.0[1])).unsigned_abs() as u32
+            + (i32::from(pc.0[2]) - i32::from(sm.0[2])).unsigned_abs() as u32
+            <= tol
+    })
+}
+
+fn perlin_pick(n: f64, shares: &[f32]) -> usize {
+    let sum: f32 = shares.iter().copied().sum();
+    if sum <= 0.0 || shares.is_empty() {
+        return 0;
+    }
+    let t = (n.clamp(0.0, 1.0) as f32) * sum;
+    let mut acc = 0.0f32;
+    for (i, s) in shares.iter().enumerate() {
+        acc += *s;
+        if t <= acc {
+            return i;
+        }
+    }
+    shares.len() - 1
+}
+
+fn mix_entry_ready(e: &MixEntry) -> bool {
+    e.density_per_ha > 0.0 && !e.species_weights.is_empty()
+}
+
+fn blend_mix_entries(entries: &[&MixEntry]) -> Option<(f32, Vec<(usize, f32)>)> {
+    let mut total_share = 0.0f32;
+    let mut density = 0.0f32;
+    let mut wmap: HashMap<usize, f32> = HashMap::new();
+    for e in entries {
+        if !mix_entry_ready(e) {
+            continue;
+        }
+        let s = e.share.max(0.0);
+        total_share += s;
+        density += e.density_per_ha * s;
+        for (i, w) in &e.species_weights {
+            *wmap.entry(*i).or_insert(0.0) += *w * s;
+        }
+    }
+    if total_share <= 0.0 || wmap.is_empty() {
+        return None;
+    }
+    Some((
+        density / total_share,
+        wmap.into_iter().filter(|(_, w)| *w > 0.0).collect(),
+    ))
+}
+
+fn area_color_for_entry(area_cf: Option<&crate::preset::ColorFilter>, e: Option<&MixEntry>) -> (Vec<Rgb8>, u32) {
+    if let Some(e) = e {
+        if let Some(cf) = e.color_filter.as_ref() {
+            if !cf.samples.is_empty() {
+                return (cf.samples.clone(), cf.tolerance);
+            }
+        }
+    }
+    area_cf
+        .map(|f| (f.samples.clone(), f.tolerance))
+        .unwrap_or_else(|| (Vec::new(), 0))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_area_interior_job<'a>(
+    jobs: &mut Vec<Job<'a>>,
+    total_target: &mut usize,
+    max_min_dist: &mut f64,
+    spacing: f64,
+    label: String,
+    source_index: usize,
+    density_per_ha: f32,
+    species_weights: &[(usize, f32)],
+    area_m2: f64,
+    area_frac: f64,
+    poly: Polygon,
+    ring: Vec<[f64; 2]>,
+    bbox: (f64, f64, f64, f64),
+    wob: std::sync::Arc<dyn Fn(f64, f64) -> f64>,
+    blend_in: f64,
+    sat: Option<&'a MaskImage>,
+    size: f64,
+    cf_samples: Vec<Rgb8>,
+    cf_tol: u32,
+    perlin: Option<(usize, Vec<f32>, f64, u64)>,
+) {
+    if species_weights.is_empty() || density_per_ha <= 0.0 {
+        return;
+    }
+    let eff_area = (area_m2 * area_frac).max(0.0);
+    let target = (eff_area / 10_000.0 * f64::from(density_per_ha)).round() as usize;
+    if target == 0 || eff_area <= 0.0 {
+        return;
+    }
+    let d = plan_min_dist(spacing, eff_area, target);
+    *max_min_dist = (*max_min_dist).max(d);
+    *total_target += target;
+    let (min_x, min_y, max_x, max_y) = bbox;
+    jobs.push(Job {
+        label,
+        target,
+        min_dist: d,
+        cum: cumulative(species_weights),
+        source_index,
+        is_edge: false,
+        cand: Box::new(move |rng: &mut StdRng| {
+            for _ in 0..24 {
+                let x = rng.gen_range(min_x..max_x);
+                let y = rng.gen_range(min_y..max_y);
+                let inside = point_in_polygon(&poly, x, y);
+                let dist = point_ring_distance(x, y, &ring);
+                let signed = if inside { dist } else { -dist };
+                if signed > wob(x, y) {
+                    if blend_in > 0.0 && signed >= 0.0 && signed < blend_in {
+                        let t = (signed / blend_in).clamp(0.0, 1.0);
+                        if rng.gen::<f64>() > smoothstep(t) {
+                            continue;
+                        }
+                    }
+                    if let Some((idx, shares, scale, seed)) = &perlin {
+                        if *scale > 0.0 && shares.len() > 1 {
+                            let n = fbm2(x / *scale, y / *scale, *seed);
+                            if perlin_pick(n, shares) != *idx {
+                                continue;
+                            }
+                        }
+                    }
+                    if !sat_color_ok(sat, size, x, y, &cf_samples, cf_tol) {
+                        continue;
+                    }
+                    return Some((x, y));
+                }
+            }
+            None
+        }),
+    });
+}
+
 // --- Wspólny dart throwing ----------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
@@ -868,14 +1027,9 @@ pub fn generate(
                 continue;
             }
             let area_m2 = polygon_area(ring);
-            let target =
-                (area_m2 / 10_000.0 * f64::from(area.density_per_ha)).round() as usize;
-            if target == 0 || area_m2 <= 0.0 {
+            if area_m2 <= 0.0 {
                 continue;
             }
-            let d = plan_min_dist(project.spacing_multiplier, area_m2, target);
-            max_min_dist = max_min_dist.max(d);
-            total_target += target;
             let poly = Polygon {
                 rings: {
                     let mut rings = vec![ring.clone()];
@@ -883,93 +1037,139 @@ pub fn generate(
                     rings
                 },
             };
-            let ring_c2 = ring.clone();
-
             // indywidualna granica tego obszaru (None = globalna)
             let eff_edges = area.edges.as_ref().unwrap_or(&project.edges);
             let jag_a = eff_edges.jagged_m.max(0.0);
             let wl_a = (eff_edges.band_width_m * 3.0).max(80.0);
             let wob_a = make_wob(jag_a, wl_a, jag_seed);
-            // blend_inside_m działa niezależnie od edges.enabled
             let blend_in_a = eff_edges.blend_inside_m.max(0.0);
 
-            // inteligentne generowanie: filtr kolorów podkładu
-            let cf_samples: Vec<Rgb8> = area
-                .color_filter
-                .as_ref()
-                .map(|f| f.samples.clone())
-                .unwrap_or_default();
-            let cf_tol = area
-                .color_filter
-                .as_ref()
-                .map(|f| f.tolerance)
-                .unwrap_or(0);
-            let use_cf = !cf_samples.is_empty() && satellite.is_some();
-            let sat_ref = satellite;
-
-            // poszarpany brzeg: podpisana odległość od granicy + szum
             let (bmin_x, bmin_y, bmax_x, bmax_y) = bbox_of(ring);
-            let margin_jag = jag_a;
             let (min_x, min_y, max_x, max_y) = (
-                (bmin_x - margin_jag).max(0.0),
-                (bmin_y - margin_jag).max(0.0),
-                (bmax_x + margin_jag).min(size),
-                (bmax_y + margin_jag).min(size),
+                (bmin_x - jag_a).max(0.0),
+                (bmin_y - jag_a).max(0.0),
+                (bmax_x + jag_a).min(size),
+                (bmax_y + jag_a).min(size),
             );
-            jobs_per_area[ai].push(Job {
-                label: area.label.clone(),
-                target,
-                min_dist: d,
-                cum: cumulative(&area.species_weights),
-                source_index: nz + ai,
-                is_edge: false,
-                cand: Box::new(
-                    move |rng: &mut StdRng| {
-                        for _ in 0..24 {
-                            let x = rng.gen_range(min_x..max_x);
-                            let y = rng.gen_range(min_y..max_y);
-                            let inside = point_in_polygon(&poly, x, y);
-                            let dist = point_ring_distance(x, y, &ring_c2);
-                            let signed = if inside { dist } else { -dist };
-                            if signed > wob_a(x, y) {
-                                // wtapianie w głąb (indywidualne dla obszaru)
-                                if blend_in_a > 0.0 && signed >= 0.0 && signed < blend_in_a {
-                                    let t = (signed / blend_in_a).clamp(0.0, 1.0);
-                                    if rng.gen::<f64>() > smoothstep(t) {
-                                        continue;
-                                    }
-                                }
-                                // inteligentne generowanie: piksel podkładu musi
-                                // pasować do jednej z próbek
-                                if use_cf {
-                                    let s = sat_ref.unwrap();
-                                    let fx = (x / size) * f64::from(s.width);
-                                    let fy = ((size - y) / size) * f64::from(s.height);
-                                    let px_i = (fx.floor().max(0.0) as u32).min(s.width - 1);
-                                    let py_i = (fy.floor().max(0.0) as u32).min(s.height - 1);
-                                    let pc = s.pixel(px_i, py_i);
-                                    let ok = cf_samples.iter().any(|sm| {
-                                        (i32::from(pc.0[0]) - i32::from(sm.0[0])).unsigned_abs()
-                                            as u32
-                                            + (i32::from(pc.0[1]) - i32::from(sm.0[1]))
-                                                .unsigned_abs()
-                                                as u32
-                                            + (i32::from(pc.0[2]) - i32::from(sm.0[2]))
-                                                .unsigned_abs()
-                                                as u32
-                                            <= cf_tol
-                                    });
-                                    if !ok {
-                                        continue;
-                                    }
-                                }
-                                return Some((x, y));
-                            }
-                        }
+            let bbox = (min_x, min_y, max_x, max_y);
+            let src_idx = nz + ai;
+            let spacing = project.spacing_multiplier;
+
+            let mixing: Vec<&MixEntry> = if area.mix_spatial {
+                area.preset_mix
+                    .iter()
+                    .filter(|e| e.spatial && mix_entry_ready(e))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let standard: Vec<&MixEntry> = if area.mix_spatial {
+                area.preset_mix
+                    .iter()
+                    .filter(|e| !e.spatial && mix_entry_ready(e))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            if !mixing.is_empty() {
+                let shares: Vec<f32> = mixing.iter().map(|e| e.share.max(0.05)).collect();
+                let share_sum: f32 = shares.iter().sum();
+                let scale = area.mix_scale_m.max(20.0);
+                let mix_seed =
+                    noise_seed ^ 0xC0FF_EE11 ^ (ai as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                let use_perlin = mixing.len() > 1;
+                for (mi, e) in mixing.iter().enumerate() {
+                    let frac = if share_sum > 0.0 {
+                        f64::from(shares[mi] / share_sum)
+                    } else {
+                        1.0 / mixing.len() as f64
+                    };
+                    let (cf_samples, cf_tol) =
+                        area_color_for_entry(area.color_filter.as_ref(), Some(e));
+                    let perlin = if use_perlin {
+                        Some((mi, shares.clone(), scale, mix_seed))
+                    } else {
                         None
-                    },
-                ),
-            });
+                    };
+                    push_area_interior_job(
+                        &mut jobs_per_area[ai],
+                        &mut total_target,
+                        &mut max_min_dist,
+                        spacing,
+                        format!("{} · {}", area.label, e.name),
+                        src_idx,
+                        e.density_per_ha,
+                        &e.species_weights,
+                        area_m2,
+                        frac,
+                        poly.clone(),
+                        ring.clone(),
+                        bbox,
+                        wob_a.clone(),
+                        blend_in_a,
+                        satellite,
+                        size,
+                        cf_samples,
+                        cf_tol,
+                        perlin,
+                    );
+                }
+                if let Some((dens, weights)) = blend_mix_entries(&standard) {
+                    let (cf_samples, cf_tol) =
+                        area_color_for_entry(area.color_filter.as_ref(), None);
+                    push_area_interior_job(
+                        &mut jobs_per_area[ai],
+                        &mut total_target,
+                        &mut max_min_dist,
+                        spacing,
+                        format!("{} · standard", area.label),
+                        src_idx,
+                        dens,
+                        &weights,
+                        area_m2,
+                        1.0,
+                        poly,
+                        ring.clone(),
+                        bbox,
+                        wob_a,
+                        blend_in_a,
+                        satellite,
+                        size,
+                        cf_samples,
+                        cf_tol,
+                        None,
+                    );
+                }
+            } else {
+                if area.species_weights.is_empty() || area.density_per_ha <= 0.0 {
+                    continue;
+                }
+                let (cf_samples, cf_tol) =
+                    area_color_for_entry(area.color_filter.as_ref(), None);
+                push_area_interior_job(
+                    &mut jobs_per_area[ai],
+                    &mut total_target,
+                    &mut max_min_dist,
+                    spacing,
+                    area.label.clone(),
+                    src_idx,
+                    area.density_per_ha,
+                    &area.species_weights,
+                    area_m2,
+                    1.0,
+                    poly,
+                    ring.clone(),
+                    bbox,
+                    wob_a,
+                    blend_in_a,
+                    satellite,
+                    size,
+                    cf_samples,
+                    cf_tol,
+                    None,
+                );
+            }
         }
     }
 
@@ -1762,6 +1962,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         // 16 ha * 200/ha = 3200 celów
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
@@ -1791,6 +1992,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -1884,6 +2086,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         proj.edges = EdgeSettings {
             enabled: true,
@@ -1971,6 +2174,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         let err = proj.validate().unwrap_err();
         assert!(err.contains("przecina sam siebie"), "{err}");
@@ -1993,6 +2197,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         let mask = mask_with_rect(60, 60, (5, 5, 50, 50), green);
         let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -2032,6 +2237,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.total > 1_000);
@@ -2137,6 +2343,7 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         };
         proj.areas.push(mk_area("Z granicą", 50.0, true));
         proj.areas.push(mk_area("Bez granicy", 620.0, false));
@@ -2191,6 +2398,7 @@ mod tests {
                 color_filter: None,
                 holes: Vec::new(),
              cutting: false,
+                ..Default::default()
             });
             proj
         };
@@ -2245,6 +2453,7 @@ mod tests {
             }),
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
 
         // mapa 1000 m, podkład 100 px => 10 m/px; lewa połowa to [0,500)
@@ -2272,8 +2481,164 @@ mod tests {
             color_filter: None,
             holes: Vec::new(),
          cutting: false,
+            ..Default::default()
         });
         let (objs2, _) = generate(&proj2, None, Some(&sat), None, None, &|_| {}).unwrap();
         assert!(objs2.iter().any(|o| o.x > 600.0));
+    }
+
+    #[test]
+    fn area_spatial_mix_splits_presets_by_perlin() {
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.use_mask_zones = false;
+        proj.use_areas = true;
+        proj.edges.jagged_m = 0.0;
+        proj.areas.push(AreaDef {
+            enabled: true,
+            label: "Miks".into(),
+            density_per_ha: 200.0,
+            species_weights: vec![(0, 1.0), (1, 1.0)],
+            polygon: square_ring(50.0, 50.0, 950.0, 950.0),
+            mix_spatial: true,
+            mix_scale_m: 120.0,
+            preset_mix: vec![
+                MixEntry {
+                    name: "A".into(),
+                    share: 1.0,
+                    spatial: true,
+                    density_per_ha: 220.0,
+                    species_weights: vec![(0, 1.0)],
+                    ..Default::default()
+                },
+                MixEntry {
+                    name: "B".into(),
+                    share: 1.0,
+                    spatial: true,
+                    density_per_ha: 220.0,
+                    species_weights: vec![(1, 1.0)],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
+        assert!(stats.total > 400, "total={}", stats.total);
+        let na = objs.iter().filter(|o| o.model == "a_1f").count();
+        let nb = objs.iter().filter(|o| o.model == "b_1f").count();
+        assert!(na > 50, "na={na}");
+        assert!(nb > 50, "nb={nb}");
+        // oba presety mają własne joby
+        assert!(stats.per_source.iter().any(|(n, _)| n.contains("A")));
+        assert!(stats.per_source.iter().any(|(n, _)| n.contains("B")));
+    }
+
+    #[test]
+    fn area_spatial_mix_opt_out_generates_standard_layer() {
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.use_mask_zones = false;
+        proj.use_areas = true;
+        proj.edges.jagged_m = 0.0;
+        proj.areas.push(AreaDef {
+            enabled: true,
+            label: "Miks".into(),
+            density_per_ha: 150.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: square_ring(50.0, 50.0, 950.0, 950.0),
+            mix_spatial: true,
+            mix_scale_m: 180.0,
+            preset_mix: vec![
+                MixEntry {
+                    name: "Laty".into(),
+                    share: 1.0,
+                    spatial: true,
+                    density_per_ha: 160.0,
+                    species_weights: vec![(0, 1.0)],
+                    ..Default::default()
+                },
+                MixEntry {
+                    name: "Podrost".into(),
+                    share: 1.0,
+                    spatial: false,
+                    density_per_ha: 80.0,
+                    species_weights: vec![(1, 1.0)],
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        });
+        let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
+        assert!(stats.total > 300, "total={}", stats.total);
+        let na = objs.iter().filter(|o| o.model == "a_1f").count();
+        let nb = objs.iter().filter(|o| o.model == "b_1f").count();
+        assert!(na > 50, "na={na}");
+        assert!(nb > 20, "nb={nb}");
+        assert!(stats.per_source.iter().any(|(n, _)| n.contains("standard")));
+    }
+
+    #[test]
+    fn area_spatial_mix_separate_color_groups() {
+        let green = Rgb8([60, 140, 60]);
+        let brown = Rgb8([140, 90, 40]);
+        let mut img = image::RgbaImage::new(100, 100);
+        for y in 0..100u32 {
+            for x in 0..100u32 {
+                let c = if x < 50 { green } else { brown };
+                img.put_pixel(x, y, image::Rgba([c.r(), c.g(), c.b(), 255]));
+            }
+        }
+        let sat = MaskImage::from_dynamic(image::DynamicImage::ImageRgba8(img));
+
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.use_mask_zones = false;
+        proj.use_areas = true;
+        proj.edges.jagged_m = 0.0;
+        proj.areas.push(AreaDef {
+            enabled: true,
+            label: "Kolory".into(),
+            density_per_ha: 200.0,
+            species_weights: vec![(0, 1.0), (1, 1.0)],
+            polygon: square_ring(50.0, 50.0, 950.0, 950.0),
+            mix_spatial: true,
+            mix_scale_m: 80.0,
+            preset_mix: vec![
+                MixEntry {
+                    name: "Zielony".into(),
+                    share: 1.0,
+                    spatial: true,
+                    density_per_ha: 220.0,
+                    species_weights: vec![(0, 1.0)],
+                    color_filter: Some(crate::preset::ColorFilter {
+                        samples: vec![green],
+                        tolerance: 40,
+                    }),
+                },
+                MixEntry {
+                    name: "Brazowy".into(),
+                    share: 1.0,
+                    spatial: true,
+                    density_per_ha: 220.0,
+                    species_weights: vec![(1, 1.0)],
+                    color_filter: Some(crate::preset::ColorFilter {
+                        samples: vec![brown],
+                        tolerance: 40,
+                    }),
+                },
+            ],
+            ..Default::default()
+        });
+
+        let (objs, stats) = generate(&proj, None, Some(&sat), None, None, &|_| {}).unwrap();
+        assert!(stats.total > 200, "total={}", stats.total);
+        for o in &objs {
+            if o.model == "a_1f" {
+                assert!(o.x < 530.0, "zielony preset na brazowym x={}", o.x);
+            }
+            if o.model == "b_1f" {
+                assert!(o.x > 470.0, "brazowy preset na zielonym x={}", o.x);
+            }
+        }
     }
 }

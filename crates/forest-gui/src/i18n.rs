@@ -986,6 +986,55 @@ const DICT: &[Entry] = &[
     ),
     ("✂️ Wycinanie", "✂️ Cut", "✂️ Ausschneiden"),
     ("Gdy włączone, obszar działa TYLKO jako wycinanie – usuwa obiekty z wnętrza (nie generuje drzew). Inne opcje znikają.", "When enabled, area works ONLY as cut — removes objects inside (does not generate trees). Other options disappear.", "Wenn aktiv, wirkt der Bereich NUR als Schnitt — entfernt Objekte innen (erzeugt keine Bäume). Andere Optionen verschwinden."),
+    // --- mieszanie presetów (obszary) ---
+    (
+        "Mieszanie presetów (Perlin + grupy kolorów)",
+        "Preset mixing (Perlin + color groups)",
+        "Preset-Mischung (Perlin + Farbgruppen)",
+    ),
+    (
+        "Łatki Perlin między zaznaczonymi presetami. Odznacz preset, aby generował się standardowo (równomiernie na całym obszarze). Każdy preset w mieszaniu może mieć własną grupę kolorów z podkładu.",
+        "Perlin patches between checked presets. Uncheck a preset to generate it uniformly over the whole area. Each mixed preset can have its own satellite color group.",
+        "Perlin-Flecken zwischen aktivierten Presets. Preset abwählen, damit es gleichmäßig über die ganze Fläche erzeugt wird. Jedes gemischte Preset kann eine eigene Satelliten-Farbgruppe haben.",
+    ),
+    ("Skala łat [m]:", "Patch scale [m]:", "Flecken-Skala [m]:"),
+    (
+        "(większa = większe plamy jednego presetu)",
+        "(larger = bigger patches of one preset)",
+        "(größer = größere Flecken eines Presets)",
+    ),
+    (
+        "Zaznaczone: w mieszaniu (łatki Perlin / grupa kolorów). Odznaczone: generuje się standardowo na całym obszarze.",
+        "Checked: in the mix (Perlin patches / color group). Unchecked: generates uniformly over the whole area.",
+        "Aktiv: in der Mischung (Perlin-Flecken / Farbgruppe). Inaktiv: wird gleichmäßig über die ganze Fläche erzeugt.",
+    ),
+    ("standardowo", "standard", "standard"),
+    (
+        "Pobierz grupę kolorów tego presetu z podkładu (Esc = koniec)",
+        "Sample this preset's color group from the satellite layer (Esc = done)",
+        "Farbgruppe dieses Presets vom Satellitenbild sampeln (Esc = Ende)",
+    ),
+    (
+        "Klikaj na podkładzie kolory dla tego presetu...",
+        "Click satellite colors for this preset...",
+        "Auf dem Satellitenbild Farben für dieses Preset klicken...",
+    ),
+    (
+        "Najpierw wczytaj podkład satelitarny (📁 Pliki).",
+        "Load a satellite layer first (📁 Files).",
+        "Zuerst Satellitenbild laden (📁 Dateien).",
+    ),
+    ("Grupa kolorów:", "Color group:", "Farbgruppe:"),
+    (
+        "Mieszanie: {0} w łatych, {1} standardowo",
+        "Mixing: {0} in patches, {1} standard",
+        "Mischung: {0} in Flecken, {1} standard",
+    ),
+    (
+        "⚠ Brak podkładu — filtr nie zadziała",
+        "⚠ No satellite layer — filter will not apply",
+        "⚠ Kein Satellitenbild — Filter wirkt nicht",
+    ),
 ];
 
 /// Tłumaczy tekst źródłowy (PL). Brak wpisu -> zwraca oryginał.

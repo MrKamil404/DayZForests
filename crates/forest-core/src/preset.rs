@@ -2,7 +2,7 @@
 
 use crate::mask::Rgb8;
 use crate::species::SpeciesDef;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +67,91 @@ fn default_cf_tol() -> u32 {
     60
 }
 
+fn default_mix_scale() -> f64 {
+    200.0
+}
+
+/// Wpis miksu presetów na obszarze. Stare projekty zapisane jako
+/// `["Nazwa", 1.0]` nadal się wczytują.
+#[derive(Clone, Debug, Serialize)]
+pub struct MixEntry {
+    pub name: String,
+    pub share: f32,
+    /// true = bierze udział w mieszaniu przestrzennym (Perlin / grupa kolorów).
+    /// false = generuje się standardowo (równomiernie na całym obszarze).
+    #[serde(default = "default_true")]
+    pub spatial: bool,
+    /// Osobna grupa kolorów tego presetu (tylko gdy `spatial` i mieszanie włączone).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_filter: Option<ColorFilter>,
+    /// Gęstość tego presetu (kopiowana przy dodaniu / odświeżeniu miksu).
+    #[serde(default)]
+    pub density_per_ha: f32,
+    /// Wagi gatunków tego presetu (indeksy do `ForestProject.species`).
+    #[serde(default)]
+    pub species_weights: Vec<(usize, f32)>,
+}
+
+impl Default for MixEntry {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            share: 1.0,
+            spatial: true,
+            color_filter: None,
+            density_per_ha: 0.0,
+            species_weights: Vec::new(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MixEntry {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Legacy(String, f32),
+            Full {
+                name: String,
+                share: f32,
+                #[serde(default = "default_true")]
+                spatial: bool,
+                #[serde(default)]
+                color_filter: Option<ColorFilter>,
+                #[serde(default)]
+                density_per_ha: f32,
+                #[serde(default)]
+                species_weights: Vec<(usize, f32)>,
+            },
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Legacy(name, share) => Ok(MixEntry {
+                name,
+                share,
+                spatial: true,
+                color_filter: None,
+                density_per_ha: 0.0,
+                species_weights: Vec::new(),
+            }),
+            Raw::Full {
+                name,
+                share,
+                spatial,
+                color_filter,
+                density_per_ha,
+                species_weights,
+            } => Ok(MixEntry {
+                name,
+                share,
+                spatial,
+                color_filter,
+                density_per_ha,
+                species_weights,
+            }),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AreaDef {
     /// Czy obszar bierze udział w generowaniu.
@@ -82,9 +167,16 @@ pub struct AreaDef {
     /// generowane wewnątrz dziur (import SHP z wieloczęściowymi poligonami).
     #[serde(default)]
     pub holes: Vec<Vec<[f64; 2]>>,
-    /// Miks presetów jak w ZoneDef.
+    /// Miks presetów — lista wpisów (wstecznie kompatybilna z parami nazwa/udział).
     #[serde(default)]
-    pub preset_mix: Vec<(String, f32)>,
+    pub preset_mix: Vec<MixEntry>,
+    /// Mieszanie przestrzenne dodanych presetów (łatki Perlin + osobne grupy kolorów).
+    /// Wyłączone = dotychczasowy miks wag (jeden zestaw gatunków na cały obszar).
+    #[serde(default)]
+    pub mix_spatial: bool,
+    /// Skala łat Perlin [m] — większa = większe plamy jednego presetu.
+    #[serde(default = "default_mix_scale")]
+    pub mix_scale_m: f64,
     /// Indywidualna granica lasu dla tego obszaru (None = użyj globalnej).
     #[serde(default)]
     pub edges: Option<EdgeSettings>,
@@ -96,6 +188,25 @@ pub struct AreaDef {
     /// obiekty leżące wewnątrz poligonu (poza dziurami). Inne opcje są wtedy ukryte.
     #[serde(default)]
     pub cutting: bool,
+}
+
+impl Default for AreaDef {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            label: "Obszar".into(),
+            density_per_ha: 0.0,
+            species_weights: Vec::new(),
+            polygon: Vec::new(),
+            holes: Vec::new(),
+            preset_mix: Vec::new(),
+            mix_spatial: false,
+            mix_scale_m: default_mix_scale(),
+            edges: None,
+            color_filter: None,
+            cutting: false,
+        }
+    }
 }
 
 /// Pas graniczny lasu — krzewy/podrost sadzone wzdłuż krawędzi stref i obszarów.
@@ -399,6 +510,12 @@ impl ForestProject {
             if !a.cutting && !a.species_weights.is_empty() {
                 a.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
             }
+            for e in &mut a.preset_mix {
+                e.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
+            }
+            if a.mix_scale_m <= 0.0 {
+                a.mix_scale_m = default_mix_scale();
+            }
             a.holes.retain(|h| h.len() >= 3);
         }
         self.areas.retain(|a| a.polygon.len() >= 3);
@@ -643,5 +760,57 @@ mod tests {
     fn validate_catches_empty_zones() {
         let p = ForestProject::default();
         assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn mix_entry_legacy_pair_and_full_object() {
+        let legacy: Vec<MixEntry> =
+            serde_json::from_str(r#"[["Sosna", 1.0], ["Brzoza", 0.5]]"#).unwrap();
+        assert_eq!(legacy.len(), 2);
+        assert_eq!(legacy[0].name, "Sosna");
+        assert_eq!(legacy[0].share, 1.0);
+        assert!(legacy[0].spatial);
+        assert!(legacy[0].species_weights.is_empty());
+        assert_eq!(legacy[1].name, "Brzoza");
+
+        let full: Vec<MixEntry> = serde_json::from_str(
+            r#"[{"name":"Sosna","share":1.0,"spatial":false,"density_per_ha":180.0,"species_weights":[[0,2.0]]}]"#,
+        )
+        .unwrap();
+        assert_eq!(full[0].name, "Sosna");
+        assert!(!full[0].spatial);
+        assert_eq!(full[0].density_per_ha, 180.0);
+        assert_eq!(full[0].species_weights, vec![(0, 2.0)]);
+
+        let json = serde_json::to_string(&full).unwrap();
+        let back: Vec<MixEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back[0].name, "Sosna");
+        assert!(!back[0].spatial);
+    }
+
+    #[test]
+    fn area_mix_spatial_roundtrip() {
+        let mut p = ForestProject::default();
+        p.areas.push(AreaDef {
+            label: "Las".into(),
+            mix_spatial: true,
+            mix_scale_m: 150.0,
+            preset_mix: vec![MixEntry {
+                name: "Sosna".into(),
+                share: 1.0,
+                spatial: true,
+                density_per_ha: 200.0,
+                species_weights: vec![(0, 1.0)],
+                ..Default::default()
+            }],
+            polygon: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&p).unwrap();
+        let q: ForestProject = serde_json::from_str(&json).unwrap();
+        assert!(q.areas[0].mix_spatial);
+        assert!((q.areas[0].mix_scale_m - 150.0).abs() < 1e-9);
+        assert_eq!(q.areas[0].preset_mix[0].name, "Sosna");
+        assert_eq!(q.areas[0].preset_mix[0].species_weights, vec![(0, 1.0)]);
     }
 }
