@@ -1329,6 +1329,11 @@ let popup_id = egui::Id::new(format!("{id}_popup"));
 
     if is_open {
         egui::popup::popup_below_widget(ui, popup_id, &response, |ui| {
+            // szerokie, jednowierszowe menu: brak zawijania etykiet
+            // + min. szerokość, żeby długie nazwy nie łamały się na 3-4 linie
+            let w = width.max(280.0);
+            ui.set_min_width(w);
+            ui.style_mut().wrap = Some(false);
             let mut q = ui
                 .memory_mut(|m| m.data.get_temp::<String>(q_id))
                 .unwrap_or_default();
@@ -1336,7 +1341,7 @@ let popup_id = egui::Id::new(format!("{id}_popup"));
             let text_edit_response = ui.add(
                 egui::TextEdit::singleline(&mut q)
                     .hint_text("🔍 Szukaj...")
-                    .desired_width(width)
+                    .desired_width(w)
                     .font(egui::FontId::proportional(12.0))
                     .frame(false),
             );

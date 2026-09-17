@@ -129,8 +129,9 @@ options*, format rekordu **Terrain Builder**, a przy pytaniu o wysokość wybier
 
 **Ważne:** Terrain Builder odrzuca cały import (`Wrong file format or source
 template not found`), jeśli choć jednego modelu z pliku nie ma w Template
-Library. Wbudowana biblioteka (44 gatunki w grupach: Liściaste / Iglaste /
-Krzewy / Bliss / Sakhal) zawiera wyłącznie nazwy zweryfikowane z
+Library. Wbudowana biblioteka (332 gatunki w grupach: Liściaste / Iglaste /
+Krzewy / Bliss / Sakhal, w tym pniaki i wykroty `d_*`, oraz 27 presetów
+stref z grupą „Pniaki i wykroty") zawiera wyłącznie nazwy zweryfikowane z
 P:\DZ\plants, P:\DZ\plants_bliss i P:\DZ\plants_sakhal — przed importem użyj
 **🔍 Sprawdź modele na P:\\** (GUI, zakładka 🌳 Gatunki) albo
 `forest-cli check-models projekt.json`.

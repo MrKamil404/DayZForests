@@ -57,11 +57,14 @@ impl SpeciesDef {
 }
 
 /// Wbudowana biblioteka roślinności vanilla DayZ — WSZYSTKIE nazwy zweryfikowane
-/// względem P:\DZ\plants\{tree,bush} (Chernarusplus). Nazwy muszą się zgadzać
-/// z wpisami w Template Library użytkownika — można edytować w GUI.
+/// względem P:\DZ\plants*, P:\DZ\plants_bliss i P:\DZ\plants_sakhal
+/// (żywe t_*/b_* oraz martwe drewno d_* — pniaki i wykroty).
+/// Nazwy muszą się zgadzać z wpisami w Template Library użytkownika —
+/// można edytować w GUI.
 ///
-/// UWAGA: indeksy z tej listy są używane przez `zone_presets()` — dodając
-/// nowe gatunki, dopisz je na końcu, żeby nie przesunąć istniejących.
+/// UWAGA: lista jest na końcu sortowana (grupa, etykieta), więc indeksy
+/// używane przez `zone_presets()` trzeba przeliczyć po każdej zmianie —
+/// nowe gatunki dopisuj na końcu funkcji (przed sortowaniem).
 pub fn vanilla_library() -> Vec<SpeciesDef> {
     const L: &str = "Liściaste";
     const I: &str = "Iglaste";
@@ -70,8 +73,9 @@ pub fn vanilla_library() -> Vec<SpeciesDef> {
     const S: &str = "Sakhal (zima/mrok)";
 
     let mut v = Vec::new();
-    // UWAGA: indeksy 0..=22 są używane przez zone_presets() — nie zmieniaj
-    // kolejności istniejących wpisów, nowe dopisuj na końcu.
+    // UWAGA: kolejność wpisów nie ma znaczenia (sortowanie na końcu), ale po
+    // każdej zmianie trzeba przeliczyć indeksy w zone_presets() — nowe wpisy
+    // dopisuj na końcu.
     let mut t = |label: &str, model: &str, smin: f32, smax: f32, group: &str| {
         v.push(SpeciesDef::grouped(label, model, smin, smax, group));
     };
@@ -145,7 +149,7 @@ pub fn vanilla_library() -> Vec<SpeciesDef> {
     t("Topola biała młoda (jesień)", "t_populusAlba_1f_latefall", 0.85, 1.15, S);
     t("Karagana bezlistna", "b_caraganaArborescens_2s_leafless", 0.85, 1.2, S);
 
-    // --- AUTO: pozostałe modele z P:\DZ\plants* (231 nowych) ---
+    // --- AUTO: pozostałe modele z P:\DZ\plants* (231) + pniaki i wykroty d_* (46) ---
     t("Brzoza 1f", "b_BetulaPendula_1f", 0.85, 1.15, K);
     t("Brzoza 1f (jesień)", "b_BetulaPendula_1f_latefall", 0.85, 1.15, S);
     t("Brzoza 1f (zima)", "b_BetulaPendula_1f_winter", 0.85, 1.15, S);
@@ -377,6 +381,55 @@ pub fn vanilla_library() -> Vec<SpeciesDef> {
     t("Jarzębina 2s", "t_sorbus_2s", 0.9, 1.15, L);
     t("town 1s", "t_town_1s", 0.85, 1.15, L);
     t("town 1sb", "t_town_1sb", 0.85, 1.15, L);
+    // --- pniaki i wykroty (d_*) — martwe drewno z P:\DZ\plants*\tree ---
+    // Chernarus (dz\plants\tree) + neutralne z Bliss (bez suffixu sezonu);
+    // warianty _dark/_winter/_latefall w grupie Sakhal.
+    t("Buk (wykrot)", "d_FagusSylvatica_fallen", 0.9, 1.15, L);
+    t("Buk (wykrot B)", "d_FagusSylvatica_fallenb", 0.9, 1.15, L);
+    t("Buk (wykrot C)", "d_FagusSylvatica_fallenc", 0.9, 1.15, L);
+    t("Buk (pniak)", "d_FagusSylvatica_stump", 0.9, 1.15, L);
+    t("Buk (pniak B)", "d_FagusSylvatica_stumpb", 0.9, 1.15, L);
+    t("Buk (pniak C)", "d_FagusSylvatica_stumpc", 0.9, 1.15, L);
+    t("Dąb (wykrot B)", "d_quercusRobur_fallenb", 0.9, 1.15, L);
+    t("Dąb (wykrot C)", "d_quercusRobur_fallenc", 0.9, 1.15, L);
+    t("Dąb (pniak)", "d_quercusRobur_stump", 0.9, 1.15, L);
+    t("Dąb (pniak B)", "d_quercusRobur_stumpb", 0.9, 1.15, L);
+    t("Brzoza (wykrot)", "d_BetulaPendula_fallen", 0.9, 1.15, L);
+    t("Brzoza (pniak)", "d_BetulaPendula_stump", 0.9, 1.15, L);
+    t("Sosna (wykrot)", "d_PinusSylvestris_fallen", 0.9, 1.15, I);
+    t("Sosna (wykrot B)", "d_PinusSylvestris_fallenb", 0.9, 1.15, I);
+    t("Sosna (wykrot C)", "d_PinusSylvestris_fallenc", 0.9, 1.15, I);
+    t("Sosna (pniak)", "d_PinusSylvestris_stump", 0.9, 1.15, I);
+    t("Sosna (pniak B)", "d_PinusSylvestris_stumpb", 0.9, 1.15, I);
+    t("Świerk (wykrot)", "d_piceaabies_fallen", 0.9, 1.15, I);
+    t("Świerk (wykrot B)", "d_piceaabies_fallenb", 0.9, 1.15, I);
+    t("Świerk (wykrot C)", "d_piceaabies_fallenc", 0.9, 1.15, I);
+    t("Świerk (wykrot D)", "d_piceaabies_fallend", 0.9, 1.15, I);
+    t("Świerk (wykrot E)", "d_piceaabies_fallene", 0.9, 1.15, I);
+    t("Świerk (pniak)", "d_piceaabies_stump", 0.9, 1.15, I);
+    t("Świerk (pniak B)", "d_piceaabies_stumpb", 0.9, 1.15, I);
+    t("Świerk (pniak C)", "d_piceaabies_stumpc", 0.9, 1.15, I);
+    t("Świerk (pniak D)", "d_piceaabies_stumpd", 0.9, 1.15, I);
+    t("Świerk (wykrot, mrok)", "d_piceaabies_fallen_dark", 0.9, 1.15, S);
+    t("Świerk (wykrot B, mrok)", "d_piceaabies_fallenb_dark", 0.9, 1.15, S);
+    t("Świerk (wykrot C, mrok)", "d_piceaabies_fallenc_dark", 0.9, 1.15, S);
+    t("Świerk (wykrot D, mrok)", "d_piceaabies_fallend_dark", 0.9, 1.15, S);
+    t("Świerk (wykrot E, mrok)", "d_piceaabies_fallene_dark", 0.9, 1.15, S);
+    t("Świerk (pniak, mrok)", "d_piceaabies_stump_dark", 0.9, 1.15, S);
+    t("Świerk (pniak B, mrok)", "d_piceaabies_stumpb_dark", 0.9, 1.15, S);
+    t("Świerk (pniak C, mrok)", "d_piceaabies_stumpc_dark", 0.9, 1.15, S);
+    t("Świerk (wykrot, zima)", "d_piceaabies_fallen_winter", 0.9, 1.15, S);
+    t("Świerk (wykrot B, zima)", "d_piceaabies_fallenb_winter", 0.9, 1.15, S);
+    t("Świerk (wykrot C, zima)", "d_piceaabies_fallenc_winter", 0.9, 1.15, S);
+    t("Świerk (wykrot D, zima)", "d_piceaabies_fallend_winter", 0.9, 1.15, S);
+    t("Świerk (wykrot E, zima)", "d_piceaabies_fallene_winter", 0.9, 1.15, S);
+    t("Świerk (pniak, zima)", "d_piceaabies_stump_winter", 0.9, 1.15, S);
+    t("Świerk (pniak B, zima)", "d_piceaabies_stumpb_winter", 0.9, 1.15, S);
+    t("Świerk (pniak C, zima)", "d_piceaabies_stumpc_winter", 0.9, 1.15, S);
+    t("Brzoza (wykrot, jesień)", "d_BetulaPendula_fallen_latefall", 0.9, 1.15, S);
+    t("Brzoza (pniak, jesień)", "d_BetulaPendula_stump_latefall", 0.9, 1.15, S);
+    t("Brzoza (wykrot, zima)", "d_BetulaPendula_fallen_winter", 0.9, 1.15, S);
+    t("Brzoza (pniak, zima)", "d_BetulaPendula_stump_winter", 0.9, 1.15, S);
     // posortuj wg grupy dla spójnego wyświetlania (Iglaste/Liściaste/Krzewy + DLC)
     v.sort_by(|a, b| {
         let order = |g: &str| match g {
@@ -396,28 +449,14 @@ pub fn vanilla_library() -> Vec<SpeciesDef> {
 }
 
 /// Skanuje katalogi roślinności na P:\ i zwraca zestaw nazw modeli (bez .p3d,
-/// z zachowaną wielkością liter jak na dysku). Obejmuje:
+/// z zachowaną wielkością liter jak na dysku). Obejmuje żywe drzewa/krzewy
+/// (t_*/b_*) oraz martwe drewno — pniaki i wykroty (d_*):
 /// - P:\DZ\plants\tree + bush (Chernarus),
 /// - P:\DZ\plants_bliss (Livonia/Bliss, warianty letnie),
 /// - P:\DZ\plants_sakhal (Sakhal, mrok/zima/jesień).
 /// Błąd, gdy workdrive nie jest zamontowany.
 pub fn game_plant_models() -> Result<std::collections::HashSet<String>, String> {
     use std::collections::HashSet;
-
-    fn scan_flat(dir: &str, out: &mut HashSet<String>) -> Result<(), String> {
-        let rd = std::fs::read_dir(dir)
-            .map_err(|e| format!("Nie mogę otworzyć {dir}: {e} (czy P:\\ jest zamontowany?)"))?;
-        for entry in rd.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if let Some(stem) = name.strip_suffix(".p3d") {
-                if stem.starts_with("t_") || stem.starts_with("b_") {
-                    out.insert(stem.to_string());
-                }
-            }
-        }
-        Ok(())
-    }
 
     fn scan_recursive(dir: &str, out: &mut HashSet<String>) -> Result<(), String> {
         let rd = std::fs::read_dir(dir)
@@ -432,7 +471,7 @@ pub fn game_plant_models() -> Result<std::collections::HashSet<String>, String> 
                 .and_then(|n| n.strip_suffix(".p3d").map(|s| s.to_string()))
             {
                 let low = stem.to_lowercase();
-                if low.starts_with("t_") || low.starts_with("b_") {
+                if low.starts_with("t_") || low.starts_with("b_") || low.starts_with("d_") {
                     out.insert(stem);
                 }
             }
@@ -442,11 +481,13 @@ pub fn game_plant_models() -> Result<std::collections::HashSet<String>, String> 
 
     let mut out = HashSet::new();
     let mut any = false;
+    // rekurencyjnie — martwe drewno leży też w podkatalogach
+    // (tree\cutted_cut, tree\cutted_stump)
     for dir in [
         "P:\\DZ\\plants\\tree",
         "P:\\DZ\\plants\\bush",
     ] {
-        scan_flat(dir, &mut out)?;
+        scan_recursive(dir, &mut out)?;
         any = true;
     }
     for root in [
@@ -460,7 +501,7 @@ pub fn game_plant_models() -> Result<std::collections::HashSet<String>, String> 
         }
     }
     if !any || out.is_empty() {
-        return Err("W P:\\DZ\\plants* nie znaleziono żadnych modeli t_/b_".into());
+        return Err("W P:\\DZ\\plants* nie znaleziono żadnych modeli t_/b_/d_".into());
     }
     Ok(out)
 }
@@ -509,25 +550,38 @@ impl ZonePreset {
 /// Indeksy gatunków wg `vanilla_library()` powyżej.
 pub fn zone_presets() -> Vec<ZonePreset> {
     use ZonePreset as P;
+    // UWAGA: indeksy odnoszą się do posortowanej listy z vanilla_library()
+    // (sortowanie na końcu tej funkcji). Po dodaniu gatunków indeksy trzeba
+    // przeliczyć — patrz skrypt gen_deadwood.py w katalogu roboczym.
     let mut v = vec![
-        P { group: "Iglaste", name: "Bór świerkowy (góry)", density_per_ha: 260.0, weights: &[(21, 4.0), (34, 3.0), (35, 2.0), (0, 1.0)] },
-        P { group: "Iglaste", name: "Bór sosnowy (niziny)", density_per_ha: 230.0, weights: &[(7, 4.0), (16, 3.0), (17, 2.0), (21, 1.0)] },
-        P { group: "Iglaste", name: "Młodnik iglasty", density_per_ha: 340.0, weights: &[(34, 5.0), (16, 3.0), (2, 2.0)] },
+        P { group: "Iglaste", name: "Bór świerkowy (góry)", density_per_ha: 260.0, weights: &[(26, 4.0), (48, 3.0), (49, 2.0), (0, 1.0)] },
+        P { group: "Iglaste", name: "Bór sosnowy (niziny)", density_per_ha: 230.0, weights: &[(7, 4.0), (21, 3.0), (22, 2.0), (26, 1.0)] },
+        P { group: "Iglaste", name: "Młodnik iglasty", density_per_ha: 340.0, weights: &[(48, 5.0), (21, 3.0), (2, 2.0)] },
         P { group: "Iglaste", name: "Modrzewina", density_per_ha: 220.0, weights: &[(0, 4.0), (2, 3.0), (5, 2.0)] },
-        P { group: "Liściaste", name: "Dębowa puszcza", density_per_ha: 180.0, weights: &[(71, 4.0), (86, 3.0), (87, 2.0), (48, 1.0)] },
-        P { group: "Liściaste", name: "Grąd (dąb-buk)", density_per_ha: 200.0, weights: &[(48, 3.0), (71, 3.0), (86, 2.0), (70, 1.0)] },
-        P { group: "Liściaste", name: "Buczyna karpacka", density_per_ha: 210.0, weights: &[(48, 4.0), (70, 3.0), (54, 2.0), (21, 1.0)] },
-        P { group: "Liściaste", name: "Brzozowy zagajnik", density_per_ha: 190.0, weights: &[(36, 4.0), (46, 3.0), (47, 2.0), (71, 1.0)] },
-        P { group: "Liściaste", name: "Łęg nadrzeczny", density_per_ha: 170.0, weights: &[(95, 3.0), (111, 3.0), (110, 2.0), (36, 1.0)] },
-        P { group: "Mieszane", name: "Las mieszany nizinny", density_per_ha: 200.0, weights: &[(36, 3.0), (71, 2.0), (7, 2.0), (21, 1.0)] },
-        P { group: "Mieszane", name: "Las mieszany wyżynny", density_per_ha: 210.0, weights: &[(21, 3.0), (48, 2.0), (36, 2.0), (87, 1.0)] },
-        P { group: "Krzewy i zarośla", name: "Zarośla krzewiaste", density_per_ha: 420.0, weights: &[(126, 3.0), (128, 3.0), (130, 2.0), (117, 2.0)] },
-        P { group: "Krzewy i zarośla", name: "Samosiewy (młodnik)", density_per_ha: 360.0, weights: &[(46, 3.0), (120, 2.0), (123, 2.0), (126, 1.0)] },
-        P { group: "Bliss (lato)", name: "Letni gaj liściasty", density_per_ha: 200.0, weights: &[(172, 3.0), (136, 3.0), (150, 2.0), (170, 1.0)] },
-        P { group: "Bliss (lato)", name: "Letni bór sosnowy", density_per_ha: 220.0, weights: &[(188, 4.0), (193, 3.0), (176, 2.0), (206, 1.0)] },
-        P { group: "Sakhal (zima/mrok)", name: "Mroczny bór świerkowy", density_per_ha: 260.0, weights: &[(282, 4.0), (283, 3.0), (280, 2.0), (271, 1.0)] },
-        P { group: "Sakhal (zima/mrok)", name: "Zimowy las mieszany", density_per_ha: 210.0, weights: &[(247, 3.0), (248, 3.0), (270, 2.0), (284, 1.0)] },
-        P { group: "Sakhal (zima/mrok)", name: "Mroczna brzezina", density_per_ha: 190.0, weights: &[(247, 4.0), (248, 3.0), (245, 2.0), (282, 1.0)] },
+        P { group: "Liściaste", name: "Dębowa puszcza", density_per_ha: 180.0, weights: &[(93, 4.0), (112, 3.0), (113, 2.0), (64, 1.0)] },
+        P { group: "Liściaste", name: "Grąd (dąb-buk)", density_per_ha: 200.0, weights: &[(64, 3.0), (93, 3.0), (112, 2.0), (92, 1.0)] },
+        P { group: "Liściaste", name: "Buczyna karpacka", density_per_ha: 210.0, weights: &[(64, 4.0), (92, 3.0), (76, 2.0), (26, 1.0)] },
+        P { group: "Liściaste", name: "Brzozowy zagajnik", density_per_ha: 190.0, weights: &[(50, 4.0), (62, 3.0), (63, 2.0), (93, 1.0)] },
+        P { group: "Liściaste", name: "Łęg nadrzeczny", density_per_ha: 170.0, weights: &[(121, 3.0), (137, 3.0), (136, 2.0), (50, 1.0)] },
+        P { group: "Mieszane", name: "Las mieszany nizinny", density_per_ha: 200.0, weights: &[(50, 3.0), (93, 2.0), (7, 2.0), (26, 1.0)] },
+        P { group: "Mieszane", name: "Las mieszany wyżynny", density_per_ha: 210.0, weights: &[(26, 3.0), (64, 2.0), (50, 2.0), (113, 1.0)] },
+        P { group: "Krzewy i zarośla", name: "Zarośla krzewiaste", density_per_ha: 420.0, weights: &[(152, 3.0), (154, 3.0), (156, 2.0), (143, 2.0)] },
+        P { group: "Krzewy i zarośla", name: "Samosiewy (młodnik)", density_per_ha: 360.0, weights: &[(62, 3.0), (146, 2.0), (149, 2.0), (152, 1.0)] },
+        P { group: "Bliss (lato)", name: "Letni gaj liściasty", density_per_ha: 200.0, weights: &[(198, 3.0), (162, 3.0), (176, 2.0), (196, 1.0)] },
+        P { group: "Bliss (lato)", name: "Letni bór sosnowy", density_per_ha: 220.0, weights: &[(214, 4.0), (219, 3.0), (202, 2.0), (232, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Mroczny bór świerkowy", density_per_ha: 260.0, weights: &[(328, 4.0), (329, 3.0), (326, 2.0), (317, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Zimowy las mieszany", density_per_ha: 210.0, weights: &[(277, 3.0), (278, 3.0), (316, 2.0), (330, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Mroczna brzezina", density_per_ha: 190.0, weights: &[(277, 4.0), (278, 3.0), (275, 2.0), (328, 1.0)] },
+        // --- martwe drewno per gatunek (d_*): pniaki po zrębie, wykroty po wiatrołomach ---
+        P { group: "Pniaki i wykroty", name: "Buk — pniaki i wykroty", density_per_ha: 30.0, weights: &[(65, 1.0), (66, 1.0), (67, 1.0), (68, 1.0), (69, 1.0), (70, 1.0), (78, 1.0), (79, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Dąb — pniaki i wykroty", density_per_ha: 30.0, weights: &[(94, 1.0), (95, 1.0), (96, 1.0), (97, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Sosna — pniaki i wykroty", density_per_ha: 30.0, weights: &[(8, 1.0), (9, 1.0), (10, 1.0), (11, 1.0), (12, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Świerk — pniaki i wykroty", density_per_ha: 30.0, weights: &[(27, 1.0), (28, 1.0), (29, 1.0), (30, 1.0), (31, 1.0), (32, 1.0), (33, 1.0), (34, 1.0), (35, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Brzoza — pniaki i wykroty", density_per_ha: 30.0, weights: &[(51, 1.0), (52, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Świerk mroczny — pniaki i wykroty", density_per_ha: 30.0, weights: &[(289, 1.0), (291, 1.0), (293, 1.0), (295, 1.0), (297, 1.0), (299, 1.0), (301, 1.0), (303, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Świerk zimowy — pniaki i wykroty", density_per_ha: 30.0, weights: &[(290, 1.0), (292, 1.0), (294, 1.0), (296, 1.0), (298, 1.0), (300, 1.0), (302, 1.0), (304, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Brzoza zimowa — pniaki i wykroty", density_per_ha: 30.0, weights: &[(244, 1.0), (246, 1.0)] },
+        P { group: "Pniaki i wykroty", name: "Brzoza jesienna — pniaki i wykroty", density_per_ha: 30.0, weights: &[(243, 1.0), (245, 1.0)] },
     ];
     v.sort_by(|a, b| {
         let order = |g: &str| match g {
@@ -537,6 +591,7 @@ pub fn zone_presets() -> Vec<ZonePreset> {
             "Krzewy i zarośla" => 3,
             "Bliss (lato)" => 4,
             "Sakhal (zima/mrok)" => 5,
+            "Pniaki i wykroty" => 6,
             _ => 99,
         };
         order(a.group)
