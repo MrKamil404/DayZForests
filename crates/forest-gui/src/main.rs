@@ -1302,6 +1302,10 @@ fn searchable_combo(
     selected_text: String,
     width: f32,
     items: &[String],
+    // Opcjonalne dodatkowe teksty do wyszukiwania (równoległe do `items`,
+    // np. nazwy modeli/classname) — pozycja pasuje, gdy zapytanie występuje
+    // w etykiecie LUB w dodatkowym tekście. Puste = szukanie tylko po etykiecie.
+    search_extra: &[String],
     mut on_select: impl FnMut(&mut egui::Ui, usize),
 ) {
 let popup_id = egui::Id::new(format!("{id}_popup"));
@@ -1352,8 +1356,14 @@ let popup_id = egui::Id::new(format!("{id}_popup"));
             let mut shown = 0usize;
             let mut filtered: Vec<usize> = Vec::new();
             for (i, label) in items.iter().enumerate() {
-                if !ql.is_empty() && !label.to_lowercase().contains(&ql) {
-                    continue;
+                if !ql.is_empty() {
+                    let in_label = label.to_lowercase().contains(&ql);
+                    let in_extra = search_extra
+                        .get(i)
+                        .is_some_and(|e| e.to_lowercase().contains(&ql));
+                    if !in_label && !in_extra {
+                        continue;
+                    }
                 }
                 filtered.push(i);
                 shown += 1;
@@ -1432,6 +1442,7 @@ fn ui_mix_rows(
             tr(lang, "wybierz z listy..."),
             170.0,
             &items,
+            &[],
             |ui, i| {
                 let (n, _s) = &presets[i];
                 let already = mix.iter().any(|(m, _)| m == n);
@@ -1753,16 +1764,13 @@ fn ui_edge_settings(
                     Color32::from_rgb(c[0], c[1], c[2]),
                 );
                 ui.label(sp.label.as_str());
+                // waga 0 wycisza gatunek, ale go NIE usuwa (usunięcie tylko przez ✖)
                 let mut w = e.species_weights[k].1;
                 if ui
                     .add(egui::DragValue::new(&mut w).speed(0.05).clamp_range(0.0..=20.0))
                     .changed()
                 {
-                    if w <= 0.0 {
-                        remove_k = Some(k);
-                    } else {
-                        e.species_weights[k].1 = w;
-                    }
+                    e.species_weights[k].1 = w;
                 }
                 if ui
                     .button("✖")
@@ -1786,6 +1794,11 @@ fn ui_edge_settings(
             .iter()
             .map(|&si| species[si].label.clone())
             .collect();
+        // modele do wyszukiwania po classname (jak szukajka w Gatunkach)
+        let models: Vec<String> = candidates
+            .iter()
+            .map(|&si| species[si].model.clone())
+            .collect();
         let mut picked: Option<usize> = None;
         searchable_combo(
             ui,
@@ -1794,8 +1807,19 @@ fn ui_edge_settings(
             tr(lang, "➕ Dodaj gatunek...").to_string(),
             190.0,
             &items,
+            &models,
             |ui, i| {
-                if ui.selectable_label(false, items[i].as_str()).clicked() {
+                let hit = ui
+                    .horizontal(|ui| {
+                        let r1 = ui.selectable_label(false, items[i].as_str());
+                        let r2 = ui.selectable_label(
+                            false,
+                            egui::RichText::new(models[i].as_str()).weak().small(),
+                        );
+                        r1.clicked() || r2.clicked()
+                    })
+                    .inner;
+                if hit {
                     picked = Some(i);
                 }
             },
@@ -3250,6 +3274,7 @@ ui.text_edit_singleline(&mut sp.label);
                                     if current.is_empty() { "— wybierz —".into() } else { current },
                                     120.0,
                                     &layer_names,
+                                    &[],
                                     |ui, idx| {
                                         if ui.selectable_label(false, layer_names[idx].clone()).clicked() {
                                             self.group_layer_assignment.insert(group.clone(), layer_names[idx].clone());
@@ -3705,9 +3730,8 @@ ui.text_edit_singleline(&mut sp.label);
                             group: "Moje".into(),
                             name: format!("Mój preset {}", self.user_presets.len() + 1),
                             density_per_ha: 200.0,
-                            weights: (0..self.project.species.len())
-                                .map(|i| (self.project.species[i].model.clone(), 1.0))
-                                .collect(),
+                            // startuje pusty — gatunki dodaje się szukajką poniżej
+                            weights: Vec::new(),
                         });
                         self.preset_edit_open = Some(self.user_presets.len() - 1);
                         self.presets_dirty = true;
@@ -3799,23 +3823,38 @@ ui.text_edit_singleline(&mut sp.label);
                     if self.preset_edit_open == Some(i) {
                         ui.indent(format!("up{i}"), |ui| {
                             ui.small("Wagi gatunków (zapisywane po nazwie modelu):");
-                            for si in 0..n_species {
-                                let Some(sp) = self.project.species.get(si) else { continue };
-                                let c = sp.effective_color(si);
+                            // tylko gatunki w presecie — resztę dodaje się szukajką niżej
+                            let mut remove_w: Option<usize> = None;
+                            for k in 0..p.weights.len() {
+                                let model = p.weights[k].0.clone();
+                                let entry = self
+                                    .project
+                                    .species
+                                    .iter()
+                                    .enumerate()
+                                    .find(|(_, s)| {
+                                        s.model.eq_ignore_ascii_case(&model)
+                                    });
+                                let (dot, label) = match entry {
+                                    Some((si, sp)) => (
+                                        sp.effective_color(si),
+                                        sp.label.clone(),
+                                    ),
+                                    // model spoza biblioteki (np. po imporcie) —
+                                    // pokazuj sam classname na szaro
+                                    None => ([150, 150, 150], model.clone()),
+                                };
                                 ui.horizontal(|ui| {
                                     let (_r, resp) = ui
                                         .allocate_exact_size(Vec2::splat(10.0), Sense::hover());
                                     ui.painter_at(resp.rect).circle_filled(
                                         resp.rect.center(),
                                         4.0,
-                                        Color32::from_rgb(c[0], c[1], c[2]),
+                                        Color32::from_rgb(dot[0], dot[1], dot[2]),
                                     );
-                                    ui.label(sp.label.as_str());
-                                    let pos = p
-                                        .weights
-                                        .iter()
-                                        .position(|(m, _)| m.eq_ignore_ascii_case(&sp.model));
-                                    let mut w = pos.map_or(0.0, |k| p.weights[k].1);
+                                    ui.label(label.as_str());
+                                    ui.weak(model.as_str());
+                                    let mut w = p.weights[k].1;
                                     let before = w;
                                     ui.add(
                                         egui::DragValue::new(&mut w)
@@ -3823,23 +3862,84 @@ ui.text_edit_singleline(&mut sp.label);
                                             .clamp_range(0.0..=20.0),
                                     );
                                     if (w - before).abs() > f32::EPSILON {
-                                        match pos {
-                                            Some(k) => {
-                                                if w <= 0.0 {
-                                                    p.weights.remove(k);
-                                                } else {
-                                                    p.weights[k].1 = w;
-                                                }
-                                            }
-                                            None => {
-                                                if w > 0.0 {
-                                                    p.weights.push((sp.model.clone(), w));
-                                                }
-                                            }
+                                        if w <= 0.0 {
+                                            remove_w = Some(k);
+                                        } else {
+                                            p.weights[k].1 = w;
                                         }
                                         edited = true;
                                     }
+                                    if ui
+                                        .button("✖")
+                                        .on_hover_text(tr(lang, "Usuń gatunek"))
+                                        .clicked()
+                                    {
+                                        remove_w = Some(k);
+                                    }
                                 });
+                            }
+                            if let Some(k) = remove_w {
+                                if k < p.weights.len() {
+                                    p.weights.remove(k);
+                                    edited = true;
+                                }
+                            }
+                            // dodawanie gatunku przez menu z szukajką
+                            // (etykieta + classname, jak w granicy lasu)
+                            let candidates: Vec<usize> = (0..n_species)
+                                .filter(|si| {
+                                    let m = &self.project.species[*si].model;
+                                    !p.weights
+                                        .iter()
+                                        .any(|(pm, _)| pm.eq_ignore_ascii_case(m))
+                                })
+                                .collect();
+                            let items: Vec<String> = candidates
+                                .iter()
+                                .map(|&si| self.project.species[si].label.clone())
+                                .collect();
+                            let models: Vec<String> = candidates
+                                .iter()
+                                .map(|&si| self.project.species[si].model.clone())
+                                .collect();
+                            let mut picked: Option<usize> = None;
+                            searchable_combo(
+                                ui,
+                                lang,
+                                &format!("preset_add_sp{i}"),
+                                tr(lang, "➕ Dodaj gatunek...").to_string(),
+                                190.0,
+                                &items,
+                                &models,
+                                |ui, j| {
+                                    let hit = ui
+                                        .horizontal(|ui| {
+                                            let r1 = ui.selectable_label(
+                                                false,
+                                                items[j].as_str(),
+                                            );
+                                            let r2 = ui.selectable_label(
+                                                false,
+                                                egui::RichText::new(models[j].as_str())
+                                                    .weak()
+                                                    .small(),
+                                            );
+                                            r1.clicked() || r2.clicked()
+                                        })
+                                        .inner;
+                                    if hit {
+                                        picked = Some(j);
+                                    }
+                                },
+                            );
+                            if let Some(j) = picked {
+                                if let Some(&si) = candidates.get(j) {
+                                    p.weights.push((
+                                        self.project.species[si].model.clone(),
+                                        1.0,
+                                    ));
+                                    edited = true;
+                                }
                             }
                             if p.weights.is_empty() {
                                 ui.colored_label(
@@ -4042,6 +4142,7 @@ ui.text_edit_singleline(&mut sp.label);
                                     sel_text,
                                     140.0,
                                     &area_labels,
+                                    &[],
                                     |ui, j| {
                                         if j == ai {
                                             return;
@@ -4271,6 +4372,7 @@ ui.text_edit_singleline(&mut sp.label);
                                     tr(lang, "wybierz z listy..."),
                                     170.0,
                                     &items,
+                                    &[],
                                     |ui, i| {
                                         let (n, _snap) = &preset_list_a[i];
                                         let already =

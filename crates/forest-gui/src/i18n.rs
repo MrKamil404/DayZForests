@@ -246,6 +246,7 @@ const DICT: &[Entry] = &[
     ("Duplikuj", "Duplicate", "Duplizieren"),
     ("Usuń preset", "Delete preset", "Preset löschen"),
     ("Edytuj preset", "Edit preset", "Preset bearbeiten"),
+    ("Usuń gatunek", "Remove species", "Art entfernen"),
     // --- obszary ---
     ("Usuń obszar", "Delete area", "Bereich löschen"),
     ("Edytuj obszar (wierzchołki)", "Edit area (vertices)", "Bereich bearbeiten (Eckpunkte)"),

@@ -540,9 +540,10 @@ impl ForestProject {
         }
         self.areas.retain(|a| a.polygon.len() >= 3);
         if self.edges.enabled {
-            self.edges
-                .species_weights
-                .retain(|(i, w)| *i < n && *w > 0.0);
+            // Waga 0 wycisza gatunek, ale go nie usuwa (usunięcie to decyzja
+            // użytkownika w UI) — odrzucamy tylko martwe indeksy.
+            // Przynajmniej jedna waga > 0 jest wymagana (sprawdza `validate`).
+            self.edges.species_weights.retain(|(i, _)| *i < n);
         }
         // --- generation_order: per-obszarowa, dokładna kolejność ---
         // 1) rozwiń legacy Areas -> Area(i) dla każdego obszaru
@@ -722,8 +723,14 @@ impl ForestProject {
             if self.edges.density_per_ha <= 0.0 {
                 return Err("Granica lasu: gęstość musi być > 0".into());
             }
-            if self.edges.species_weights.is_empty() {
-                return Err("Granica lasu: brak gatunków".into());
+            if self.edges.species_weights.is_empty()
+                || !self
+                    .edges
+                    .species_weights
+                    .iter()
+                    .any(|(_, w)| *w > 0.0)
+            {
+                return Err("Granica lasu: brak gatunków (ustaw wagę > 0 dla przynajmniej jednego)".into());
             }
             check_weights(&self.edges.species_weights, self.species.len())
                 .map_err(|e| format!("Granica lasu: {e}"))?;
@@ -817,6 +824,28 @@ mod tests {
         p.sanitize();
         assert!((p.scale_min - 0.1).abs() < 1e-6);
         assert!((p.scale_max - 5.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn edge_zero_weight_survives_sanitize_but_all_zero_fails_validate() {
+        let mut p = ForestProject::default();
+        p.zones.push(ZoneDef {
+            color: Rgb8([0, 128, 0]),
+            label: "Las".into(),
+            density_per_ha: 100.0,
+            species_weights: vec![(0, 1.0)],
+            preset_mix: Vec::new(),
+        });
+        p.edges.enabled = true;
+        p.edges.species_weights = vec![(0, 0.0), (1, 2.0)];
+        p.sanitize();
+        // waga 0 zostaje (wyciszony, ale widoczny w UI)
+        assert_eq!(p.edges.species_weights, vec![(0, 0.0), (1, 2.0)]);
+        assert!(p.validate().is_ok());
+        // same zera = brak udziału w losowaniu -> błąd zamiast NaN w silniku
+        p.edges.species_weights = vec![(0, 0.0), (1, 0.0)];
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("Granica lasu"), "{err}");
     }
 
     #[test]
