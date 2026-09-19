@@ -1396,6 +1396,21 @@ pub fn generate(
                     let s_lo = band_a * (k as f64) / EDGE_STRIPS as f64;
                     let s_hi = band_a * ((k + 1) as f64) / EDGE_STRIPS as f64;
                     let ring_c = ring.clone();
+                    // Zazębianie z wnętrzem: pas mierzony od POSZARPANEJ linii
+                    // (odległość znaku: |signed - wob|), a nie od sztywnego
+                    // obrysu. Dzięki temu tam, gdzie poszarpanie wycina wnękę
+                    // w paśmie granicznym, wnętrze lasu tę lukę wypełnia
+                    // (wspólna, przesunięta linia brzegowa) — bez łysych plam.
+                    // Przy jagged=0 wzór sprowadza się do starego (s = dist).
+                    let poly_c = Polygon {
+                        rings: {
+                            let mut rings = vec![ring.clone()];
+                            rings.extend(
+                                area.holes.iter().filter(|h| h.len() >= 3).cloned(),
+                            );
+                            rings
+                        },
+                    };
                     let wob_a = wob_a.clone();
                     let cf_samples = cf_samples.clone();
                     jobs_per_area[ai].push(Job {
@@ -1414,7 +1429,11 @@ pub fn generate(
                             for _ in 0..24 {
                                 let x = rng.gen_range(min_x..max_x);
                                 let y = rng.gen_range(min_y..max_y);
-                                let s = point_ring_distance(x, y, &ring_c) + wob_a(x, y);
+                                let dist = point_ring_distance(x, y, &ring_c);
+                                let w = wob_a(x, y);
+                                let signed =
+                                    if point_in_polygon(&poly_c, x, y) { dist } else { -dist };
+                                let s = (signed - w).abs();
                                 if s >= s_lo && s < s_hi {
                                     // inteligentne generowanie: piksel podkładu musi
                                     // pasować do jednej z próbek
