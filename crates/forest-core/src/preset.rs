@@ -668,6 +668,16 @@ impl ForestProject {
                 }
                 continue;
             }
+            // własna granica obszaru — te same wymagania co globalna
+            // (silnik liczy pas nawet dla obszaru bez drzew, więc sprawdzamy
+            // przed `continue` dla nieskonfigurowanych)
+            if let Some(e) = a.edges.as_ref().filter(|e| e.enabled) {
+                check_edge_settings(
+                    e,
+                    self.species.len(),
+                    &format!("Obszar '{}' (własna granica)", a.label),
+                )?;
+            }
             // obszar nieskonfigurowany (bez presetu) — legalny, generuje 0 obiektów
             if a.species_weights.is_empty() && a.density_per_ha <= 0.0 {
                 continue;
@@ -717,23 +727,7 @@ impl ForestProject {
                 .map_err(|e| format!("Obszar '{}': {e}", a.label))?;
         }
         if self.edges.enabled {
-            if self.edges.band_width_m <= 0.0 {
-                return Err("Granica lasu: szerokość pasa musi być > 0".into());
-            }
-            if self.edges.density_per_ha <= 0.0 {
-                return Err("Granica lasu: gęstość musi być > 0".into());
-            }
-            if self.edges.species_weights.is_empty()
-                || !self
-                    .edges
-                    .species_weights
-                    .iter()
-                    .any(|(_, w)| *w > 0.0)
-            {
-                return Err("Granica lasu: brak gatunków (ustaw wagę > 0 dla przynajmniej jednego)".into());
-            }
-            check_weights(&self.edges.species_weights, self.species.len())
-                .map_err(|e| format!("Granica lasu: {e}"))?;
+            check_edge_settings(&self.edges, self.species.len(), "Granica lasu")?;
         }
         Ok(())
     }
@@ -746,6 +740,26 @@ fn check_weights(weights: &[(usize, f32)], species_len: usize) -> Result<(), Str
         }
     }
     Ok(())
+}
+
+fn check_edge_settings(
+    e: &EdgeSettings,
+    species_len: usize,
+    ctx: &str,
+) -> Result<(), String> {
+    if e.band_width_m <= 0.0 {
+        return Err(format!("{ctx}: szerokość pasa musi być > 0"));
+    }
+    if e.density_per_ha <= 0.0 {
+        return Err(format!("{ctx}: gęstość musi być > 0"));
+    }
+    if e.species_weights.is_empty() || !e.species_weights.iter().any(|(_, w)| *w > 0.0) {
+        return Err(format!(
+            "{ctx}: brak gatunków (ustaw wagę > 0 dla przynajmniej jednego)"
+        ));
+    }
+    check_weights(&e.species_weights, species_len)
+        .map_err(|er| format!("{ctx}: {er}"))
 }
 
 #[cfg(test)]
@@ -846,6 +860,42 @@ mod tests {
         p.edges.species_weights = vec![(0, 0.0), (1, 0.0)];
         let err = p.validate().unwrap_err();
         assert!(err.contains("Granica lasu"), "{err}");
+    }
+
+    #[test]
+    fn validate_rejects_area_own_edge_without_species() {
+        // regresja: własna granica bez gatunków powodowała panikę silnika
+        // (scatter.rs pick_species na pustej liście) zamiast czytelnego błędu
+        let mut p = ForestProject::default();
+        p.zones.push(ZoneDef {
+            color: Rgb8([0, 128, 0]),
+            label: "Las".into(),
+            density_per_ha: 100.0,
+            species_weights: vec![(0, 1.0)],
+            preset_mix: Vec::new(),
+        });
+        p.areas.push(AreaDef {
+            enabled: true,
+            label: "Wycinka".into(),
+            density_per_ha: 100.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            edges: Some(EdgeSettings {
+                enabled: true,
+                band_width_m: 15.0,
+                density_per_ha: 80.0,
+                species_weights: Vec::new(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("własna granica"), "{err}");
+
+        // same zera zamiast pustej listy — ten sam błąd
+        p.areas[0].edges.as_mut().unwrap().species_weights = vec![(0, 0.0)];
+        let err = p.validate().unwrap_err();
+        assert!(err.contains("własna granica"), "{err}");
     }
 
     #[test]

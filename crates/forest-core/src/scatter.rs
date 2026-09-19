@@ -182,6 +182,7 @@ fn cumulative(weights: &[(usize, f32)]) -> Vec<(usize, f64)> {
 }
 
 fn pick_species(cum: &[(usize, f64)], rng: &mut StdRng) -> usize {
+    debug_assert!(!cum.is_empty(), "pick_species: pusta lista wag");
     let pick: f64 = rng.gen();
     cum.iter()
         .find(|(_, a)| pick <= *a)
@@ -1201,7 +1202,8 @@ pub fn generate(
     }
 
     // --- Źródło: pas graniczny ------------------------------------------------------
-    if project.edges.enabled {
+    // (puste wagi odrzuca validate(); guard na wypadek obejścia walidacji)
+    if project.edges.enabled && !project.edges.species_weights.is_empty() {
         let band = project.edges.band_width_m;
         let band_px = ((band / ps).ceil() as usize).clamp(1, 128);
         let ecum = cumulative(&project.edges.species_weights);
@@ -1313,6 +1315,9 @@ pub fn generate(
                 let jag_a = eff.jagged_m.max(0.0);
                 let wob_a = make_wob(jag_a, (band_a * 3.0).max(80.0), jag_seed);
                 let ecum_a = cumulative(&eff.species_weights);
+                if ecum_a.is_empty() {
+                    continue; // validate() to wyłapuje; brak paniki przy obejściu
+                }
 
                 let perim = polygon_perimeter(ring);
                 let inner = polygon_area(ring);
@@ -2195,6 +2200,38 @@ mod tests {
             let d = point_ring_distance(o.x, o.y, &proj.areas[0].polygon);
             assert!(d <= 35.0, "odległość od granicy {d}m");
         }
+    }
+
+    #[test]
+    fn area_own_edge_without_species_is_clear_error_not_panic() {
+        // regresja: własna granica bez gatunków kończyła się paniką wątku
+        // (pick_species na pustej liście) i pustym podglądem; ma być
+        // czytelny błąd walidacji
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.areas.push(AreaDef {
+            enabled: true,
+            label: "Pusty pas".into(),
+            density_per_ha: 150.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: square_ring(300.0, 300.0, 700.0, 700.0),
+            preset_mix: Vec::new(),
+            edges: Some(EdgeSettings {
+                enabled: true,
+                band_width_m: 25.0,
+                density_per_ha: 900.0,
+                species_weights: Vec::new(),
+                blend: false,
+                jagged_m: 0.0,
+                blend_inside_m: 0.0,
+            }),
+            color_filter: None,
+            holes: Vec::new(),
+            cutting: false,
+            ..Default::default()
+        });
+        let err = generate(&proj, None, None, None, None, &|_| {}).unwrap_err();
+        assert!(err.contains("własna granica"), "{err}");
     }
 
     #[test]
