@@ -606,6 +606,17 @@ fn mix_entry_ready(e: &MixEntry) -> bool {
     e.density_per_ha > 0.0 && !e.species_weights.is_empty()
 }
 
+/// Efektywna gęstość i wagi pasa granicznego: miks presetów (blend udziałów),
+/// a gdy miks pusty/niegotowy — ręczna lista gatunków.
+fn edge_effective(e: &crate::preset::EdgeSettings) -> (f32, Vec<(usize, f32)>) {
+    let ready: Vec<&MixEntry> = e.preset_mix.iter().filter(|m| mix_entry_ready(m)).collect();
+    if let Some((d, w)) = blend_mix_entries(&ready) {
+        (d, w)
+    } else {
+        (e.density_per_ha, e.species_weights.clone())
+    }
+}
+
 fn blend_mix_entries(entries: &[&MixEntry]) -> Option<(f32, Vec<(usize, f32)>)> {
     let mut total_share = 0.0f32;
     let mut density = 0.0f32;
@@ -1203,10 +1214,16 @@ pub fn generate(
 
     // --- Źródło: pas graniczny ------------------------------------------------------
     // (puste wagi odrzuca validate(); guard na wypadek obejścia walidacji)
-    if project.edges.enabled && !project.edges.species_weights.is_empty() {
+    if project.edges.enabled {
         let band = project.edges.band_width_m;
         let band_px = ((band / ps).ceil() as usize).clamp(1, 128);
-        let ecum = cumulative(&project.edges.species_weights);
+        // miks presetów (blend) albo ręczna lista
+        let (edge_dens, edge_w) = edge_effective(&project.edges);
+        if edge_w.is_empty() {
+            // niegotowy miks i pusta ręczna lista — nic do sadzenia
+            return Err("Granica lasu: brak gatunków (ustaw wagę > 0 albo dodaj preset)".into());
+        }
+        let ecum = cumulative(&edge_w);
         let blend = project.edges.blend;
 
         // najpierw policz pasy na masce (piksel + głębokość od krawędzi)
@@ -1229,8 +1246,7 @@ pub fn generate(
         for (zi, band_set) in &edge_bands {
             let total_area = band_set.len() as f64 * pixel_area;
             let base_target =
-                (total_area / 10_000.0 * f64::from(project.edges.density_per_ha)).round()
-                    as usize;
+                (total_area / 10_000.0 * f64::from(edge_dens)).round() as usize;
             if base_target == 0 {
                 continue;
             }
@@ -1314,10 +1330,12 @@ pub fn generate(
                 let band_a = eff.band_width_m;
                 let jag_a = eff.jagged_m.max(0.0);
                 let wob_a = make_wob(jag_a, (band_a * 3.0).max(80.0), jag_seed);
-                let ecum_a = cumulative(&eff.species_weights);
-                if ecum_a.is_empty() {
+                // miks presetów zamiast ręcznej listy (blend udziałów)
+                let (eff_dens, eff_w) = edge_effective(eff);
+                if eff_w.is_empty() {
                     continue; // validate() to wyłapuje; brak paniki przy obejściu
                 }
+                let ecum_a = cumulative(&eff_w);
 
                 let perim = polygon_perimeter(ring);
                 let inner = polygon_area(ring);
@@ -1326,7 +1344,7 @@ pub fn generate(
                     continue;
                 }
                 let base_target =
-                    (area_m2 / 10_000.0 * f64::from(eff.density_per_ha)).round() as usize;
+                    (area_m2 / 10_000.0 * f64::from(eff_dens)).round() as usize;
                 if base_target == 0 {
                     continue;
                 }
@@ -2124,6 +2142,7 @@ mod tests {
             blend: false,
             jagged_m: 0.0, // deterministyczny pas do testów odległości
             blend_inside_m: 0.0,
+            preset_mix: Vec::new(),
         };
 
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
@@ -2192,6 +2211,7 @@ mod tests {
             blend: false,
             jagged_m: 0.0,
             blend_inside_m: 0.0,
+            preset_mix: Vec::new(),
         };
         let (objs, stats) = generate(&proj, None, None, None, None, &|_| {}).unwrap();
         assert!(stats.edge_count > 0);
@@ -2224,7 +2244,8 @@ mod tests {
                 blend: false,
                 jagged_m: 0.0,
                 blend_inside_m: 0.0,
-            }),
+                preset_mix: Vec::new(),
+                }),
             color_filter: None,
             holes: Vec::new(),
             cutting: false,
@@ -2232,6 +2253,39 @@ mod tests {
         });
         let err = generate(&proj, None, None, None, None, &|_| {}).unwrap_err();
         assert!(err.contains("własna granica"), "{err}");
+    }
+
+    #[test]
+    fn edge_preset_mix_blends_into_band() {
+        // miks presetów w granicy: blend udziałów zamiast ręcznej listy
+        let green = Rgb8([0, 200, 0]);
+        let mut proj = zone_project(&[green]);
+        proj.zones[0].species_weights = vec![(0, 1.0)]; // a_1f tylko wnętrze
+        proj.edges = EdgeSettings {
+            enabled: true,
+            band_width_m: 40.0,
+            density_per_ha: 160.0, // ignorowane, gdy miks gotowy
+            species_weights: Vec::new(), // ręczna pusta: miks przejmuje
+            preset_mix: vec![MixEntry {
+                name: "Zyw".into(),
+                share: 1.0,
+                spatial: false,
+                color_filter: None,
+                density_per_ha: 900.0,
+                species_weights: vec![(1, 1.0)], // b_1f tylko granica
+            }],
+            blend: false,
+            jagged_m: 0.0,
+            blend_inside_m: 0.0,
+        };
+        let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
+        let (objs, stats) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
+        assert!(stats.edge_count > 0, "edge_count={}", stats.edge_count);
+        assert!(objs.iter().any(|o| o.model == "b_1f"), "brak obiektów z miksu");
+        assert!(
+            objs.iter().filter(|o| o.model == "b_1f").count() == stats.edge_count as usize,
+            "pas ma zawierać tylko miks"
+        );
     }
 
     #[test]
@@ -2409,6 +2463,7 @@ mod tests {
             blend: true,
             jagged_m: 0.0,
             blend_inside_m: 0.0,
+            preset_mix: Vec::new(),
         };
         let mask = mask_with_rect(100, 100, (10, 10, 80, 80), green);
         let (objs, _) = generate(&proj, Some(&mask), None, None, None, &|_| {}).unwrap();
@@ -2464,7 +2519,8 @@ mod tests {
                     blend: false,
                     jagged_m: 0.0,
                     blend_inside_m: 0.0,
-                })
+                    preset_mix: Vec::new(),
+                    })
             } else {
                 None
             },

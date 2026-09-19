@@ -105,11 +105,12 @@ poza ekran (przy oddaleniu mniejszym od kanwy jest automatycznie wycentrowana).
 Każdy wiersz:
 
 ```
-"t_PiceaAbies_2f";211294.535483;8315.806183;21.757461;1.072276;0.410091;1.100093;0.000000;
+"t_PiceaAbies_2f";211294.535483;8315.806183;21.757461;1.072276;0.410091;1.100093;0.000000;0;
 ```
 
-`"model";X;Y;Yaw;Pitch;Roll;Scale;Elevation;` — X zawiera **easting offset
-(domyślnie +200 000)**, Y ewentualny northing offset.
+`"model";X;Y;Yaw;Pitch;Roll;Scale;Elevation;Underground;` — X zawiera **easting offset
+(domyślnie +200 000)**, Y ewentualny northing offset. `Underground` zawsze `0`
+(flaga wymagana przez TB od pełnej aktualizacji DayZ).
 
 ### Konwencja współrzędnych (jak w mapach DayZ/Arma)
 
@@ -130,8 +131,9 @@ options*, format rekordu **Terrain Builder**, a przy pytaniu o wysokość wybier
 **Ważne:** Terrain Builder odrzuca cały import (`Wrong file format or source
 template not found`), jeśli choć jednego modelu z pliku nie ma w Template
 Library. Wbudowana biblioteka (332 gatunki w grupach: Liściaste / Iglaste /
-Krzewy / Bliss / Sakhal, w tym pniaki i wykroty `d_*`, oraz 27 presetów
-stref z grupą „Pniaki i wykroty") zawiera wyłącznie nazwy zweryfikowane z
+Krzewy / Bliss / Sakhal, w tym pniaki i wykroty `d_*`, oraz 31 presetów
+stref (w tym grupy „Pniaki i wykroty" i gotowe miksy na pas graniczny)")
+zawiera wyłącznie nazwy zweryfikowane z
 P:\DZ\plants, P:\DZ\plants_bliss i P:\DZ\plants_sakhal — przed importem użyj
 **🔍 Sprawdź modele na P:\\** (GUI, zakładka 🌳 Gatunki) albo
 `forest-cli check-models projekt.json`.

@@ -138,17 +138,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 color: conifer,
                 label: "Las iglasty".into(),
                 density_per_ha: 150.0,
-                // indeksy wg vanilla_library(): 13 świerk wys., 12 świerk, 16 sosna wys.,
-                // 11 świerk mł., 17 leszczyna
-                species_weights: vec![(13, 5.0), (12, 3.0), (16, 2.0), (11, 2.0), (17, 1.0)],
+                // indeksy wg posortowanej vanilla_library(): świerk wys. (49),
+                // świerk (26), sosna wys. (22), świerk mł. (48), leszczyna (152)
+                species_weights: vec![(49, 5.0), (26, 3.0), (22, 2.0), (48, 2.0), (152, 1.0)],
                 preset_mix: Vec::new(),
             },
             ZoneDef {
                 color: mixed,
                 label: "Las mieszany".into(),
                 density_per_ha: 110.0,
-                // 1 brzoza, 4 dąb, 12 świerk, 6 buk, 18 bez
-                species_weights: vec![(1, 3.0), (4, 2.0), (12, 2.0), (6, 1.0), (18, 1.0)],
+                // brzoza (50), dąb (93), świerk (26), buk (64), bez (143)
+                species_weights: vec![(50, 3.0), (93, 2.0), (26, 2.0), (64, 1.0), (143, 1.0)],
                 preset_mix: Vec::new(),
             },
         ],
@@ -160,10 +160,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             enabled: true,
             band_width_m: 18.0,
             density_per_ha: 140.0,
-            species_weights: vec![(17, 3.0), (19, 3.0), (18, 2.0), (20, 1.0)],
+            species_weights: vec![(152, 3.0), (154, 3.0), (143, 2.0), (156, 1.0)],
             blend: true,
             jagged_m: 30.0,
             blend_inside_m: 45.0,
+            preset_mix: Vec::new(),
         },
         paths: ProjectPaths {
             mask: Some(mask_path.to_string_lossy().to_string()),

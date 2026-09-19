@@ -1,7 +1,9 @@
 //! Eksport obiektów do pliku TXT dla Terrain Buildera.
 //!
-//! Format wiersza (potwierdzony dla TB / DayZ Tools):
-//!   "nazwa_modelu";X;Y;Yaw;Pitch;Roll;Scale;Elevation;
+//! Format wiersza (potwierdzony dla TB / DayZ Tools, flaga underground
+//! wymagana od pełnej aktualizacji DayZ):
+//!   "nazwa_modelu";X;Y;Yaw;Pitch;Roll;Scale;Elevation;Underground;
+//! Underground jest zawsze eksportowane jako 0.
 //! X zawiera offset easting (klasycznie +200000). Nazwa modelu musi odpowiadać
 //! wpisowi w Template Library. Przy imporcie wybierz odpowiednio
 //! "relative" (Elevation=0) lub "absolute" (wysokość z heightmapy).
@@ -36,7 +38,7 @@ pub fn write_tb_txt(
     for o in objects {
         writeln!(
             out,
-            "\"{}\";{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};",
+            "\"{}\";{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};{:.6};0;",
             o.model,
             o.x + project.easting_offset,
             o.y + project.northing_offset,
@@ -470,7 +472,7 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert_eq!(
             s,
-            "\"t_BetulaPendula_2f\";200456.296875;1032.300049;250.000000;-1.500000;2.250000;1.000000;5.686351;\n"
+            "\"t_BetulaPendula_2f\";200456.296875;1032.300049;250.000000;-1.500000;2.250000;1.000000;5.686351;0;\n"
         );
     }
 

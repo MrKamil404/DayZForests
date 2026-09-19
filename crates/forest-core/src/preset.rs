@@ -217,6 +217,10 @@ pub struct EdgeSettings {
     pub band_width_m: f64,
     pub density_per_ha: f32,
     pub species_weights: Vec<(usize, f32)>,
+    /// Miks presetów (jak w obszarach): gdy zawiera gotowe wpisy, pas
+    /// generuje zmieszane gatunki z miksu zamiast ręcznej listy powyżej.
+    #[serde(default)]
+    pub preset_mix: Vec<MixEntry>,
     /// Wtapianie: gęstość pasa zanika wraz z odległością od granicy
     /// (zamiast równomiernego, twardego pasa).
     #[serde(default = "default_true")]
@@ -245,8 +249,11 @@ impl Default for EdgeSettings {
             enabled: false,
             band_width_m: 15.0,
             density_per_ha: 160.0,
-            // leszczyna (17), róża (19), bez (18), tarnina (20) — wg vanilla_library
-            species_weights: vec![(17, 3.0), (19, 3.0), (18, 2.0), (20, 1.0)],
+            // leszczyna, róża, bez, tarnina — indeksy wg posortowanej
+            // vanilla_library() (przeliczone 09.2026; przy zmianie biblioteki
+            // przeliczyć jak w zone_presets)
+            species_weights: vec![(152, 3.0), (154, 3.0), (143, 2.0), (156, 1.0)],
+            preset_mix: Vec::new(),
             blend: true,
             jagged_m: 25.0,
             blend_inside_m: 40.0,
@@ -544,6 +551,19 @@ impl ForestProject {
             // użytkownika w UI) — odrzucamy tylko martwe indeksy.
             // Przynajmniej jedna waga > 0 jest wymagana (sprawdza `validate`).
             self.edges.species_weights.retain(|(i, _)| *i < n);
+            for e in &mut self.edges.preset_mix {
+                e.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
+            }
+        }
+        for a in &mut self.areas {
+            if let Some(e) = a.edges.as_mut() {
+                if e.enabled {
+                    e.species_weights.retain(|(i, _)| *i < n);
+                    for m in &mut e.preset_mix {
+                        m.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
+                    }
+                }
+            }
         }
         // --- generation_order: per-obszarowa, dokładna kolejność ---
         // 1) rozwiń legacy Areas -> Area(i) dla każdego obszaru
@@ -753,13 +773,27 @@ fn check_edge_settings(
     if e.density_per_ha <= 0.0 {
         return Err(format!("{ctx}: gęstość musi być > 0"));
     }
-    if e.species_weights.is_empty() || !e.species_weights.iter().any(|(_, w)| *w > 0.0) {
+    // gatunki z ręcznej listy LUB z gotowego wpisu miksu presetów
+    let manual_ok =
+        !e.species_weights.is_empty() && e.species_weights.iter().any(|(_, w)| *w > 0.0);
+    let mix_ok = e
+        .preset_mix
+        .iter()
+        .any(|m| m.density_per_ha > 0.0 && !m.species_weights.is_empty());
+    if !(manual_ok || mix_ok) {
         return Err(format!(
-            "{ctx}: brak gatunków (ustaw wagę > 0 dla przynajmniej jednego)"
+            "{ctx}: brak gatunków (ustaw wagę > 0 dla przynajmniej jednego albo dodaj preset)"
         ));
     }
-    check_weights(&e.species_weights, species_len)
-        .map_err(|er| format!("{ctx}: {er}"))
+    if manual_ok {
+        check_weights(&e.species_weights, species_len)
+            .map_err(|er| format!("{ctx}: {er}"))?;
+    }
+    for m in &e.preset_mix {
+        check_weights(&m.species_weights, species_len)
+            .map_err(|er| format!("{ctx} (miks '{0}'): {er}", m.name))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -896,6 +930,51 @@ mod tests {
         p.areas[0].edges.as_mut().unwrap().species_weights = vec![(0, 0.0)];
         let err = p.validate().unwrap_err();
         assert!(err.contains("własna granica"), "{err}");
+    }
+
+    #[test]
+    fn default_edge_points_at_shrubs_not_pines() {
+        // regresja: zahardkodowane indeksy wskazywały sosny po rozrośnięciu
+        // biblioteki — granica ma sadzić krzewy
+        let lib = crate::species::vanilla_library();
+        let e = EdgeSettings::default();
+        let models: Vec<&str> = e
+            .species_weights
+            .iter()
+            .map(|(i, _)| lib[*i].model.as_str())
+            .collect();
+        assert_eq!(
+            models,
+            vec![
+                "b_corylusAvellana_2s",
+                "b_rosaCanina_2s",
+                "b_sambucusNigra_2s",
+                "b_prunusSpinosa_2s"
+            ]
+        );
+    }
+
+    #[test]
+    fn edge_preset_mix_satisfies_validation_without_manual_species() {
+        let mut p = ForestProject::default();
+        p.zones.push(ZoneDef {
+            color: Rgb8([0, 128, 0]),
+            label: "Las".into(),
+            density_per_ha: 100.0,
+            species_weights: vec![(0, 1.0)],
+            preset_mix: Vec::new(),
+        });
+        p.edges.enabled = true;
+        p.edges.species_weights.clear();
+        p.edges.preset_mix = vec![MixEntry {
+            name: "Miks".into(),
+            share: 1.0,
+            spatial: false,
+            color_filter: None,
+            density_per_ha: 150.0,
+            species_weights: vec![(0, 1.0)],
+        }];
+        assert!(p.validate().is_ok());
     }
 
     #[test]

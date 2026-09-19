@@ -1669,6 +1669,7 @@ fn ui_edge_settings(
     e: &mut EdgeSettings,
     d: &EdgeSettings,
     species: &[forest_core::species::SpeciesDef],
+    presets: &[(String, PSnap)],
 ) {
     let n_species = species.len();
     setting_bool(
@@ -1835,6 +1836,100 @@ fn ui_edge_settings(
         ));
         if let Some(i) = picked {
             e.species_weights.push((candidates[i], 1.0));
+        }
+        // --- miks presetów (blend udziałów zamiast ręcznej listy) ---
+        ui.separator();
+        ui.small(tr(lang, "Miks presetów (zastępuje ręczną listę):"));
+        let mut remove_m: Option<usize> = None;
+        let mut rebake = false;
+        for (mi, m) in e.preset_mix.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.monospace(tr(lang, m.name.as_str()));
+                let before = m.share;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut m.share)
+                            .speed(0.01)
+                            .clamp_range(0.05..=1.0)
+                            .suffix("×"),
+                    )
+                    .changed()
+                    && (m.share - before).abs() > f32::EPSILON
+                {
+                    rebake = true;
+                }
+                if ui.button("✖").clicked() {
+                    remove_m = Some(mi);
+                    rebake = true;
+                }
+            });
+        }
+        if let Some(mi) = remove_m {
+            if mi < e.preset_mix.len() {
+                e.preset_mix.remove(mi);
+            }
+        }
+        ui.horizontal(|ui| {
+            ui.label(tr(lang, "Dodaj preset:"));
+            let items: Vec<String> = presets
+                .iter()
+                .map(|(n, s)| format!("{}  ({:.0}/ha)", tr(lang, n), s.density_per_ha))
+                .collect();
+            searchable_combo(
+                ui,
+                lang,
+                &format!("edge_mix_add_{id}"),
+                tr(lang, "wybierz z listy..."),
+                170.0,
+                &items,
+                &[],
+                |ui, i| {
+                    let (n, _s) = &presets[i];
+                    let already = e.preset_mix.iter().any(|m| &m.name == n);
+                    let label = if already {
+                        format!("✓ {}", tr(lang, n))
+                    } else {
+                        items[i].clone()
+                    };
+                    if ui.add_enabled(!already, egui::Button::new(label)).clicked() {
+                        e.preset_mix.push(forest_core::preset::MixEntry {
+                            name: n.clone(),
+                            share: 1.0,
+                            spatial: false,
+                            ..Default::default()
+                        });
+                        rebake = true;
+                    }
+                },
+            );
+        });
+        if rebake {
+            for m in e.preset_mix.iter_mut() {
+                bake_mix_entry(m, presets, species);
+            }
+        }
+        // podgląd efektu miksu (blend jak w silniku)
+        {
+            let mut ts = 0.0f32;
+            let mut dens = 0.0f32;
+            let mut set = std::collections::HashSet::new();
+            for m in &e.preset_mix {
+                if m.density_per_ha > 0.0 && !m.species_weights.is_empty() {
+                    let s = m.share.max(0.0);
+                    ts += s;
+                    dens += m.density_per_ha * s;
+                    for (si, _) in &m.species_weights {
+                        set.insert(*si);
+                    }
+                }
+            }
+            if ts > 0.0 && !set.is_empty() {
+                ui.small(tf(
+                    lang,
+                    "Efekt: {0} szt/ha, {1} gatunków",
+                    &[&format!("{:.0}", dens / ts), &set.len().to_string()],
+                ));
+            }
         }
     });
 }
@@ -2863,7 +2958,12 @@ impl ForestApp {
             .show(ui, |ui| {
                 let d_edges = EdgeSettings::default();
                 let species_snap = self.project.species.clone();
-                ui_edge_settings(ui, self.lang, "G", &mut self.project.edges, &d_edges, &species_snap);
+                let edge_presets: Vec<(String, PSnap)> = self
+                    .all_presets()
+                    .into_iter()
+                    .map(|s| (s.name.clone(), s))
+                    .collect();
+                ui_edge_settings(ui, self.lang, "G", &mut self.project.edges, &d_edges, &species_snap, &edge_presets);
             });
 
         CollapsingHeader::new(tr(lang, "Filtry i rozrzut"))
@@ -4586,6 +4686,7 @@ ui.text_edit_singleline(&mut sp.label);
                                         ge,
                                         &global_edges_snap,
                                         &species_snap_a,
+                                        &preset_list_a,
                                     );
                                 });
                             }

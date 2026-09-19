@@ -582,6 +582,11 @@ pub fn zone_presets() -> Vec<ZonePreset> {
         P { group: "Pniaki i wykroty", name: "Świerk zimowy — pniaki i wykroty", density_per_ha: 30.0, weights: &[(290, 1.0), (292, 1.0), (294, 1.0), (296, 1.0), (298, 1.0), (300, 1.0), (302, 1.0), (304, 1.0)] },
         P { group: "Pniaki i wykroty", name: "Brzoza zimowa — pniaki i wykroty", density_per_ha: 30.0, weights: &[(244, 1.0), (246, 1.0)] },
         P { group: "Pniaki i wykroty", name: "Brzoza jesienna — pniaki i wykroty", density_per_ha: 30.0, weights: &[(243, 1.0), (245, 1.0)] },
+        // --- gotowe miksy na pas graniczny (do wyboru w Granicy lasu) ---
+        P { group: "Krzewy i zarośla", name: "Żywopłot liściasty", density_per_ha: 160.0, weights: &[(152, 3.0), (154, 2.0), (156, 2.0), (143, 1.0), (149, 1.0)] },
+        P { group: "Krzewy i zarośla", name: "Podszyt — samosiewy", density_per_ha: 220.0, weights: &[(62, 3.0), (76, 2.0), (101, 2.0), (48, 1.0), (21, 1.0)] },
+        P { group: "Krzewy i zarośla", name: "Ciernisty pas", density_per_ha: 180.0, weights: &[(156, 3.0), (149, 3.0), (154, 2.0), (157, 1.0)] },
+        P { group: "Sakhal (zima/mrok)", name: "Zimowy pas krzewów", density_per_ha: 150.0, weights: &[(275, 3.0), (274, 2.0), (279, 2.0), (307, 1.0)] },
     ];
     v.sort_by(|a, b| {
         let order = |g: &str| match g {
