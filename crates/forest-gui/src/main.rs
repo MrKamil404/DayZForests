@@ -43,6 +43,14 @@ fn main() -> eframe::Result<()> {
 
 type GenRx = Receiver<Result<(Vec<PlacedObject>, GenStats), String>>;
 
+/// Zaimportowany plik TXT oczekujący na potwierdzenie zastąpienia obiektów.
+struct PendingImport {
+    objects: Vec<PlacedObject>,
+    unknown_models: usize,
+    skipped: usize,
+    file_name: String,
+}
+
 struct ForestApp {
     project: ForestProject,
     project_path: Option<std::path::PathBuf>,
@@ -71,6 +79,11 @@ struct ForestApp {
     busy: bool,
     error: Option<String>,
     info: Option<String>,
+    /// Przy zapisie projektu zapisuj też wygenerowane obiekty (sidecar
+    /// `<projekt>.objects.json`, wczytywany z powrotem przy otwarciu).
+    save_objects_with_project: bool,
+    /// Import TXT oczekujący na potwierdzenie (modal).
+    pending_import: Option<PendingImport>,
 
     // tryb rysowania poligonów (obszary)
     draw_mode: bool,
@@ -87,10 +100,14 @@ struct ForestApp {
 
     /// Zaznaczone obszary (indeksy) — narzędzie 🎯 + filtr w panelu Obszary.
     selected_areas: HashSet<usize>,
-    /// Tryb zaznaczania na mapie (klik = przełącz, przeciągnięcie = ramka).
+    /// Tryb zaznaczania na mapie (klik = przełącz, przeciągnięcie = ramka/lasso).
     select_mode: bool,
     /// Początek ramki zaznaczania (współrzędne ekranu).
     select_drag_start: Option<egui::Pos2>,
+    /// Tryb lassa (dowolny kształt) zamiast prostokąta.
+    select_lasso: bool,
+    /// Punkty lassa w trakcie rysowania (współrzędne ekranu).
+    lasso_points: Vec<egui::Pos2>,
     /// Panel Obszary: pokazuj tylko zaznaczone.
     show_only_selected: bool,
     /// Szukajka: gatunki / obszary.
@@ -125,11 +142,10 @@ struct ForestApp {
     // język interfejsu
     lang: Lang,
 
-    // warstwy z layers.cfg
-    /// Mapa: indeks gatunku → nazwa warstwy (do eksportu PNG z kolorami warstw)
-    species_layer_assignment: std::collections::HashMap<usize, String>,
-    /// Mapa: nazwa grupy → nazwa warstwy (do masowego przypisywania)
-    group_layer_assignment: std::collections::HashMap<String, String>,
+    // warstwy z layers.cfg — przypisania trzymane W PROJEKCIE
+    // (ForestProject.species_layers po modelu TB i .group_layers),
+    // dzięki czemu import/dodawanie/usuwanie gatunków ich nie rozjeżdża
+    // i przetrwają ponowne otwarcie projektu.
 
     /// Drag&drop dla listy kolejności generowania (indeks przeciąganego elementu)
     gen_order_drag: Option<usize>,
@@ -179,6 +195,8 @@ impl ForestApp {
             busy: false,
             error: None,
             info: None,
+            save_objects_with_project: false,
+            pending_import: None,
             draw_mode: false,
             draw_points: Vec::new(),
             editing_area: None,
@@ -187,6 +205,8 @@ impl ForestApp {
             selected_areas: HashSet::new(),
             select_mode: false,
             select_drag_start: None,
+            select_lasso: false,
+            lasso_points: Vec::new(),
             show_only_selected: false,
             species_search: String::new(),
             area_search: String::new(),
@@ -203,8 +223,6 @@ impl ForestApp {
             preset_edit_open: None,
             presets_dirty: false,
             lang: Lang::Pl,
-            species_layer_assignment: std::collections::HashMap::new(),
-            group_layer_assignment: std::collections::HashMap::new(),
             gen_order_drag: None,
         }
     }
@@ -497,14 +515,7 @@ impl ForestApp {
                 self.stats = Some(stats);
                 self.busy = false;
                 self.gen_rx = None;
-                // podgląd działa też bez maski (np. generowanie z samych poligonów)
-                let (dw, dh) = match &self.mask {
-                    Some(m) => preview_dims(m, PREVIEW_MAX_DIM),
-                    None => (PREVIEW_MAX_DIM, PREVIEW_MAX_DIM),
-                };
-                let overlay = build_overlay(dw, dh, &self.objects, &self.project);
-                self.overlay_tex =
-                    Some(ctx.load_texture("overlay", overlay, TextureOptions::NEAREST));
+                self.refresh_overlay(ctx);
                 self.info = Some(tr(lang, "Gotowe.").into());
             }
             Ok(Err(e)) => {
@@ -540,6 +551,18 @@ impl ForestApp {
 
     // --- eksport / projekt ------------------------------------------------------
 
+    /// Odbuduj nakładkę podglądu drzew na mapie (po generowaniu, imporcie
+    /// albo wczytaniu obiektów z projektem). Bez maski też działa.
+    fn refresh_overlay(&mut self, ctx: &egui::Context) {
+        let (dw, dh) = match &self.mask {
+            Some(m) => preview_dims(m, PREVIEW_MAX_DIM),
+            None => (PREVIEW_MAX_DIM, PREVIEW_MAX_DIM),
+        };
+        let overlay = build_overlay(dw, dh, &self.objects, &self.project);
+        self.overlay_tex =
+            Some(ctx.load_texture("overlay", overlay, TextureOptions::NEAREST));
+    }
+
     fn export_txt(&mut self) {
         if self.objects.is_empty() {
             self.error = Some("Brak wygenerowanych obiektów.".into());
@@ -556,6 +579,172 @@ impl ForestApp {
                 Err(e) => self.error = Some(e),
             }
         }
+    }
+
+    /// Import obiektów z pliku TB TXT (ten sam format co eksport).
+    /// Gdy są już jakieś obiekty, import czeka na potwierdzenie w modalu
+    /// (zastąpienie), w przeciwnym razie wczytuje od razu.
+    fn import_txt(&mut self, ctx: &egui::Context) {
+        let lang = self.lang;
+        let title = tr(lang, "Wczytaj plik Terrain Buildera (TXT)");
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(&title)
+            .add_filter("Terrain Builder TXT", &["txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.error = Some(format!("Odczyt pliku: {e}"));
+                return;
+            }
+        };
+        match forest_core::parse_tb_txt(&text, &self.project) {
+            Ok(imp) => {
+                self.error = None;
+                let file_name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if self.objects.is_empty() {
+                    self.apply_import(
+                        ctx,
+                        PendingImport {
+                            objects: imp.objects,
+                            unknown_models: imp.unknown_models,
+                            skipped: imp.skipped.len(),
+                            file_name,
+                        },
+                    );
+                } else {
+                    // są obiekty — najpierw potwierdzenie zastąpienia
+                    self.pending_import = Some(PendingImport {
+                        objects: imp.objects,
+                        unknown_models: imp.unknown_models,
+                        skipped: imp.skipped.len(),
+                        file_name,
+                    });
+                }
+            }
+            Err(e) => self.error = Some(e),
+        }
+    }
+
+    /// Wstaw zaimportowane obiekty (po potwierdzeniu): dobierz brakujące
+    /// gatunki z biblioteki vanilla, dociągnij warstwy wg grup,
+    /// potem statystyki + podgląd.
+    fn apply_import(&mut self, ctx: &egui::Context, imp: PendingImport) {
+        let lang = self.lang;
+        use std::collections::HashMap;
+        let norm = forest_core::species::normalize_model_name;
+        // mapa znanych modeli projektu (znormalizowane -> indeks)
+        let mut proj_map: HashMap<String, usize> = HashMap::new();
+        for (i, s) in self.project.species.iter().enumerate() {
+            proj_map.entry(norm(&s.model)).or_insert(i);
+        }
+        // mapa biblioteki vanilla (pierwszy wpis wygrywa)
+        let mut van_map: HashMap<String, forest_core::species::SpeciesDef> =
+            HashMap::new();
+        for def in forest_core::species::vanilla_library() {
+            van_map.entry(norm(&def.model)).or_insert(def);
+        }
+        let mut cache: HashMap<String, usize> = HashMap::new();
+        let mut added = 0usize;
+        let mut objects = imp.objects;
+        for o in objects.iter_mut() {
+            if let Some(&idx) = cache.get(&o.model) {
+                o.species_index = idx;
+                continue;
+            }
+            let n = norm(&o.model);
+            let idx = match proj_map.get(&n).copied() {
+                Some(pi) => pi,
+                None => match van_map.get(&n) {
+                    Some(def) => {
+                        let pi = self.project.species.len();
+                        self.project.species.push(def.clone());
+                        proj_map.insert(n, pi);
+                        added += 1;
+                        pi
+                    }
+                    None => usize::MAX,
+                },
+            };
+            cache.insert(o.model.clone(), idx);
+            o.species_index = idx;
+        }
+        let unknown_count: usize = objects
+            .iter()
+            .filter(|o| o.species_index == usize::MAX)
+            .count();
+        // nowym gatunkom dociągnij warstwy z przypisań grup (po modelu TB)
+        let filled = self.project.fill_layers_from_groups();
+        let n = objects.len();
+        let mut per_species: Vec<(String, usize)> = self
+            .project
+            .species
+            .iter()
+            .map(|s| (s.label.clone(), 0))
+            .collect();
+        for o in &objects {
+            if let Some(e) = per_species.get_mut(o.species_index) {
+                e.1 += 1;
+            }
+        }
+        self.objects = objects;
+        self.stats = Some(GenStats {
+            total: n,
+            per_species,
+            ..Default::default()
+        });
+        self.refresh_overlay(ctx);
+        self.error = None;
+        let mut msg = format!("Zaimportowano {n} obiektów z {}.", imp.file_name);
+        if added > 0 {
+            msg += &format!(
+                " {}",
+                tf(
+                    lang,
+                    "Dopasowano {0} gatunków z biblioteki (dodano do projektu).",
+                    &[added.to_string().as_str()]
+                )
+            );
+        }
+        if unknown_count > 0 {
+            let mut shown: Vec<String> = {
+                let mut v: Vec<String> = cache
+                    .iter()
+                    .filter(|(_, &idx)| idx == usize::MAX)
+                    .map(|(m, _)| m.clone())
+                    .collect();
+                v.sort();
+                v.into_iter().take(5).collect()
+            };
+            let distinct_unknown = cache.values().filter(|&&v| v == usize::MAX).count();
+            if distinct_unknown > shown.len() {
+                shown.push("…".into());
+            }
+            msg += &format!(
+                " {}",
+                tf(
+                    lang,
+                    "{0} obiektów o modelach spoza biblioteki (białe na podglądzie): {1}.",
+                    &[
+                        unknown_count.to_string().as_str(),
+                        shown.join(", ").as_str()
+                    ]
+                )
+            );
+        }
+        if imp.skipped > 0 {
+            msg += &format!(" Pominięto {} błędnych wierszy.", imp.skipped);
+        }
+        if filled > 0 {
+            msg += &format!(" Nadano warstwy {filled} gatunkom (wg grup).");
+        }
+        self.info = Some(msg);
     }
 
     /// Eksport warstwy drzew jako przezroczysty PNG (rozdzielczość wg rozmiaru mapy).
@@ -629,7 +818,7 @@ impl ForestApp {
             self.error = Some("Brak zaimportowanych warstw (layers.cfg).".into());
             return;
         }
-        if self.species_layer_assignment.is_empty() {
+        if self.project.species_layers.is_empty() {
             self.error = Some("Brak przypisanych warstw do gatunków. Zaimportuj layers.cfg i przypisz warstwy.".into());
             return;
         }
@@ -651,7 +840,7 @@ impl ForestApp {
         match forest_core::export_trees_png_with_layers(
             &self.objects,
             &self.project,
-            &self.species_layer_assignment,
+            &self.project.species_layers,
             &layer_colors,
             res,
             path,
@@ -666,9 +855,10 @@ impl ForestApp {
         if let Some(path) = self.project_path.clone() {
             match self.project.save(&path) {
                 Ok(()) => {
-                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
                     self.last_autosave = Some(std::time::Instant::now());
                     self.error = None;
+                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
+                    self.persist_objects_sidecar(&path);
                 }
                 Err(e) => self.error = Some(e),
             }
@@ -684,8 +874,9 @@ impl ForestApp {
                 Ok(()) => {
                     self.project_path = Some(path.clone());
                     self.last_autosave = Some(std::time::Instant::now());
-                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
                     self.error = None;
+                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
+                    self.persist_objects_sidecar(&path);
                 }
                 Err(e) => self.error = Some(e),
             }
@@ -703,11 +894,35 @@ impl ForestApp {
                 Ok(()) => {
                     self.project_path = Some(path.clone());
                     self.last_autosave = Some(std::time::Instant::now());
-                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
                     self.error = None;
+                    self.info = Some(format!("Zapisano projekt: {}", path.display()));
+                    self.persist_objects_sidecar(&path);
                 }
                 Err(e) => self.error = Some(e),
             }
+        }
+    }
+
+    /// Po udanym zapisie JSON-a projektu: opcjonalny zapis wygenerowanych
+    /// obiektów do pliku towarzyszącego `<projekt>.objects.json`.
+    /// Gdy opcja jest wyłączona albo brak obiektów, nieaktualny sidecar jest
+    /// usuwany, żeby otwarcie projektu nie wczytało starych obiektów.
+    fn persist_objects_sidecar(&mut self, path: &std::path::Path) {
+        if self.save_objects_with_project && !self.objects.is_empty() {
+            let stats = self.stats.clone().unwrap_or_default();
+            match forest_core::saved::save_sidecar(path, &self.objects, &stats) {
+                Ok(side) => {
+                    self.info = Some(format!(
+                        "Zapisano projekt: {} (+ {} obiektów → {})",
+                        path.display(),
+                        self.objects.len(),
+                        side.display()
+                    ));
+                }
+                Err(e) => self.error = Some(e),
+            }
+        } else {
+            forest_core::saved::remove_sidecar(path);
         }
     }
 
@@ -747,9 +962,31 @@ impl ForestApp {
                     self.info = Some(tf(lang, "Wczytano projekt: {0}", &[path.display().to_string().as_str()]));
                     self.reload_project_files(ctx);
                     self.error = None;
+                    self.reload_objects_sidecar(ctx);
                 }
                 Err(e) => self.error = Some(e),
             }
+        }
+    }
+
+    /// Doczytuje wygenerowane obiekty z pliku towarzyszącego projektu
+    /// (`<projekt>.objects.json`), jeśli istnieje — razem ze statystykami
+    /// i odbudową podglądu na mapie.
+    fn reload_objects_sidecar(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.project_path.clone() else {
+            return;
+        };
+        match forest_core::saved::load_sidecar(&path) {
+            Ok(Some(data)) => {
+                let n = data.objects.len();
+                self.objects = data.objects;
+                self.stats = Some(data.stats);
+                self.refresh_overlay(ctx);
+                let base = self.info.take().unwrap_or_default();
+                self.info = Some(format!("{base} (+ {n} zapisanych obiektów)"));
+            }
+            Ok(None) => {}
+            Err(e) => self.error = Some(e),
         }
     }
 
@@ -933,6 +1170,7 @@ impl ForestApp {
     fn toggle_select_mode(&mut self) {
         self.select_mode = !self.select_mode;
         self.select_drag_start = None;
+        self.lasso_points.clear();
         if self.select_mode {
             self.draw_mode = false;
             self.draw_points.clear();
@@ -985,6 +1223,7 @@ impl ForestApp {
         if let Some(l) = Lang::from_code(&prefs.language) {
             self.lang = l;
         }
+        self.save_objects_with_project = prefs.save_objects_with_project;
         for (name, b) in &prefs.shortcuts {
             if let Some(a) = Action::from_name(name) {
                 self.shortcuts.insert(a, b.as_deref().and_then(KeyBind::parse));
@@ -1002,6 +1241,7 @@ impl ForestApp {
         i18n::UiPrefs {
             language: self.lang.code().into(),
             shortcuts,
+            save_objects_with_project: self.save_objects_with_project,
         }
         .save(i18n::PREFS_FILE);
     }
@@ -2333,6 +2573,12 @@ impl eframe::App for ForestApp {
                 .map_or(true, |t| t.elapsed().as_secs() >= 60)
             {
                 let _ = self.project.save(&path);
+                // cichy sidecar z obiektami, jeśli opcja włączona
+                if self.save_objects_with_project && !self.objects.is_empty() {
+                    let stats = self.stats.clone().unwrap_or_default();
+                    let _ =
+                        forest_core::saved::save_sidecar(&path, &self.objects, &stats);
+                }
                 self.last_autosave = Some(std::time::Instant::now());
             }
         }
@@ -2479,6 +2725,60 @@ impl eframe::App for ForestApp {
                 });
             self.show_shortcuts_help = open;
         }
+
+        // modal potwierdzenia importu: zastąpienie istniejących obiektów
+        if self.pending_import.is_some() {
+            let mut open = true;
+            egui::Window::new(tr(lang, "Import obiektów"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let (n_new, n_old, fname, n_unknown) = self
+                        .pending_import
+                        .as_ref()
+                        .map(|p| {
+                            (
+                                p.objects.len(),
+                                self.objects.len(),
+                                p.file_name.clone(),
+                                p.unknown_models,
+                            )
+                        })
+                        .unwrap_or_default();
+                    ui.label(tf(
+                        lang,
+                        "Plik {0}: {1} obiektów. Import ZASTĄPI {2} istniejących obiektów. Kontynuować?",
+                        &[
+                            fname.as_str(),
+                            n_new.to_string().as_str(),
+                            n_old.to_string().as_str(),
+                        ],
+                    ));
+                    if n_unknown > 0 {
+                        ui.small(tf(
+                            lang,
+                            "{0} obiektów ma modele spoza projektu — pasujące gatunki zostaną dobrane z biblioteki.",
+                            &[n_unknown.to_string().as_str()],
+                        ));
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button(tr(lang, "Importuj (zastąp)")).clicked() {
+                            if let Some(imp) = self.pending_import.take() {
+                                self.apply_import(ctx, imp);
+                            }
+                        }
+                        if ui.button(tr(lang, "Anuluj")).clicked() {
+                            self.pending_import = None;
+                        }
+                    });
+                });
+            if !open {
+                self.pending_import = None;
+            }
+        }
     }
 }
 
@@ -2510,6 +2810,13 @@ impl ForestApp {
                 .on_hover_text(self.bind_hint(Action::ExportPng))
                 .clicked()
                 .then(|| self.export_trees_png());
+                ui.add_enabled(!self.busy, egui::Button::new(tr(lang, "Import TXT")))
+                    .on_hover_text(tr(
+                        lang,
+                        "Wczytaj obiekty z pliku TB TXT (ten sam format co eksport)",
+                    ))
+                    .clicked()
+                    .then(|| self.import_txt(ui.ctx()));
                 ui.separator();
                 if ui
                     .button(tr(lang, "Wczytaj"))
@@ -2524,6 +2831,19 @@ impl ForestApp {
                     .clicked()
                 {
                     self.save_project();
+                }
+                if ui
+                    .checkbox(
+                        &mut self.save_objects_with_project,
+                        tr(lang, "Obiekty w projekcie"),
+                    )
+                    .on_hover_text(tr(
+                        lang,
+                        "Zapisuj wygenerowane obiekty razem z projektem",
+                    ))
+                    .changed()
+                {
+                    self.save_prefs();
                 }
                 ui.separator();
                 if ui
@@ -2561,6 +2881,25 @@ impl ForestApp {
                     .clicked()
                 {
                     self.toggle_select_mode();
+                }
+                if self.select_mode {
+                    ui.separator();
+                    if ui
+                        .selectable_label(!self.select_lasso, tr(lang, "Prostokąt"))
+                        .on_hover_text(tr(lang, "Zaznaczanie ramką prostokątną"))
+                        .clicked()
+                    {
+                        self.select_lasso = false;
+                        self.lasso_points.clear();
+                    }
+                    if ui
+                        .selectable_label(self.select_lasso, tr(lang, "Lasso"))
+                        .on_hover_text(tr(lang, "Zaznaczanie odręcznym obrysem (dokładniejsze)"))
+                        .clicked()
+                    {
+                        self.select_lasso = true;
+                        self.select_drag_start = None;
+                    }
                 }
                 ui.separator();
                 ui.checkbox(&mut self.show_sat, tr(lang, "Podkład"));
@@ -3371,7 +3710,7 @@ ui.text_edit_singleline(&mut sp.label);
                         for (gi, group) in groups.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 ui.label(group.as_str());
-                                let current = self.group_layer_assignment.get(group).cloned().unwrap_or_default();
+                                let current = self.project.group_layers.get(group).cloned().unwrap_or_default();
                                 searchable_combo(
                                     ui,
                                     lang,
@@ -3382,7 +3721,7 @@ ui.text_edit_singleline(&mut sp.label);
                                     &[],
                                     |ui, idx| {
                                         if ui.selectable_label(false, layer_names[idx].clone()).clicked() {
-                                            self.group_layer_assignment.insert(group.clone(), layer_names[idx].clone());
+                                            self.project.group_layers.insert(group.clone(), layer_names[idx].clone());
                                         }
                                     },
                                 );
@@ -3391,12 +3730,23 @@ ui.text_edit_singleline(&mut sp.label);
                     }
 
                     if ui.button(tr(lang, "Zastosuj grupy do gatunków")).clicked() {
-                        for (i, sp) in self.project.species.iter().enumerate() {
-                            if let Some(layer) = self.group_layer_assignment.get(&sp.group) {
-                                self.species_layer_assignment.insert(i, layer.clone());
+                        // pełne zastosowanie (z nadpisaniem): mapowanie jest
+                        // w całości pochodną przypisań grup
+                        let mut n = 0;
+                        for sp in &self.project.species {
+                            if let Some(layer) =
+                                self.project.group_layers.get(&sp.group).cloned()
+                            {
+                                self.project.species_layers.insert(
+                                    ForestProject::layer_key(&sp.model),
+                                    layer,
+                                );
+                                n += 1;
                             }
                         }
-                        self.info = Some("Przypisano warstwy do gatunków wg grup".into());
+                        self.info = Some(format!(
+                            "Przypisano warstwy do gatunków wg grup ({n} gatunków)"
+                        ));
                     }
 
                     ui.separator();
@@ -4952,7 +5302,42 @@ ui.text_edit_singleline(&mut sp.label);
                 }
             }
             if resp.drag_stopped() {
-                if let (Some(start), Some(end)) = (self.select_drag_start, resp.hover_pos()) {
+                if self.select_lasso {
+                    // --- lasso: poligon z narysowanej ścieżki ---
+                    if self.lasso_points.len() >= 3 {
+                        let mapf32 = map as f32;
+                        let to_world = |s: egui::Pos2| -> [f64; 2] {
+                            [
+                                (((s.x - origin.x) / scale).clamp(0.0, mapf32)) as f64,
+                                ((mapf32 - ((s.y - origin.y) / scale)).clamp(0.0, mapf32)) as f64,
+                            ]
+                        };
+                        let lasso_w: Vec<[f64; 2]> =
+                            self.lasso_points.iter().map(|p| to_world(*p)).collect();
+                        // mikrolasso (klik bez rysowania) = zwykłe kliknięcie, nic nie rób
+                        let mut plen = 0.0f32;
+                        for w in self.lasso_points.windows(2) {
+                            plen += w[0].distance(w[1]);
+                        }
+                        if plen > 12.0 {
+                            for (ai, a) in self.project.areas.iter().enumerate() {
+                                if a.polygon.len() < 3 {
+                                    continue;
+                                }
+                                if area_intersects_poly(a, &lasso_w) {
+                                    self.selected_areas.insert(ai);
+                                }
+                            }
+                            if !self.selected_areas.is_empty() {
+                                self.show_only_selected = true;
+                            }
+                        }
+                    }
+                    self.lasso_points.clear();
+                    self.select_drag_start = None;
+                } else if let (Some(start), Some(end)) =
+                    (self.select_drag_start, resp.hover_pos())
+                {
                     let x0 = start.x.min(end.x);
                     let x1 = start.x.max(end.x);
                     let y0 = start.y.min(end.y);
@@ -4966,18 +5351,17 @@ ui.text_edit_singleline(&mut sp.label);
                                 ((mapf32 - ((sy - origin.y) / scale)).clamp(0.0, mapf32)) as f64,
                             )
                         };
-                        let (w0x, w1y_top) = to_world(x0, y0);
-                        let (w1x, w0y_top) = to_world(x1, y1);
+                        let (w0x, wy_top) = to_world(x0, y0);
+                        let (w1x, wy_bottom) = to_world(x1, y1);
                         let (rmin_x, rmax_x) = (w0x.min(w1x), w0x.max(w1x));
-                        let (rmin_y, rmax_y) = (w0y_top.max(w1y_top), w0y_top.min(w1y_top));
+                        // y ekranu rośnie w dół, więc góra ekranu = większe y świata
+                        let (rmin_y, rmax_y) = (wy_bottom.min(wy_top), wy_bottom.max(wy_top));
+                        let rect = (rmin_x, rmin_y, rmax_x, rmax_y);
                         for (ai, a) in self.project.areas.iter().enumerate() {
-                            if a.polygon.is_empty() {
+                            if a.polygon.len() < 3 {
                                 continue;
                             }
-                            let (bx0, by0, bx1, by1) = poly_bbox(&a.polygon);
-                            let hit =
-                                bx0 <= rmax_x && bx1 >= rmin_x && by0 <= rmax_y && by1 >= rmin_y;
-                            if hit {
+                            if area_intersects_rect(a, rect) {
                                 self.selected_areas.insert(ai);
                             }
                         }
@@ -4985,11 +5369,26 @@ ui.text_edit_singleline(&mut sp.label);
                             self.show_only_selected = true;
                         }
                     }
+                    self.select_drag_start = None;
+                } else {
+                    self.select_drag_start = None;
                 }
-                self.select_drag_start = None;
+            }
+            // zbieranie ścieżki lassa w trakcie przeciągania
+            if self.select_lasso && resp.dragged_by(PointerButton::Primary) {
+                if let Some(hover) = resp.hover_pos() {
+                    let push = match self.lasso_points.last() {
+                        Some(last) => last.distance(hover) > 4.0,
+                        None => true,
+                    };
+                    if push {
+                        self.lasso_points.push(hover);
+                    }
+                }
             }
             if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.select_drag_start = None;
+                self.lasso_points.clear();
                 self.selected_areas.clear();
                 self.show_only_selected = false;
             }
@@ -5373,7 +5772,7 @@ ui.text_edit_singleline(&mut sp.label);
 
         // ramka zaznaczania (🎯)
         if let (Some(start), Some(hover)) = (self.select_drag_start, resp.hover_pos()) {
-            if self.select_mode && resp.dragged_by(PointerButton::Primary) {
+            if self.select_mode && !self.select_lasso && resp.dragged_by(PointerButton::Primary) {
                 painter.rect_stroke(
                     Rect::from_two_pos(start, hover),
                     0.0,
@@ -5384,6 +5783,34 @@ ui.text_edit_singleline(&mut sp.label);
                     0.0,
                     Color32::from_rgba_premultiplied(120, 220, 120, 28),
                 );
+            }
+        }
+        // lasso zaznaczania (🎯) — ścieżka rysowana odręcznie
+        if self.select_mode && self.select_lasso && !self.lasso_points.is_empty() {
+            let stroke = egui::Stroke::new(1.5_f32, Color32::from_rgb(120, 220, 120));
+            let pts = &self.lasso_points;
+            for w in pts.windows(2) {
+                painter.line_segment([w[0], w[1]], stroke);
+            }
+            // domknięcie do kursora na żywo
+            if resp.dragged_by(PointerButton::Primary) {
+                if let Some(hover) = resp.hover_pos() {
+                    if let Some(last) = pts.last() {
+                        painter.line_segment([*last, hover], stroke);
+                    }
+                    if pts.len() >= 2 {
+                        painter.line_segment(
+                            [hover, pts[0]],
+                            egui::Stroke::new(
+                                1.0_f32,
+                                Color32::from_rgba_premultiplied(120, 220, 120, 90),
+                            ),
+                        );
+                    }
+                    for p in pts.iter() {
+                        painter.circle_filled(*p, 1.5, Color32::from_rgb(120, 220, 120));
+                    }
+                }
             }
         }
 
@@ -5458,6 +5885,165 @@ fn poly_bbox(ring: &[[f64; 2]]) -> (f64, f64, f64, f64) {
         y1 = y1.max(p[1]);
     }
     (x0, y0, x1, y1)
+}
+
+/// Orientacja trójki punktów (znak iloczynu wektorowego).
+fn orient2(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn on_seg2(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
+    p[0] >= a[0].min(b[0]) - 1e-9
+        && p[0] <= a[0].max(b[0]) + 1e-9
+        && p[1] >= a[1].min(b[1]) - 1e-9
+        && p[1] <= a[1].max(b[1]) + 1e-9
+}
+
+/// Przecięcie odcinków (łącznie ze stykiem końcówek i współliniowością).
+fn segs_intersect(p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], p4: [f64; 2]) -> bool {
+    let d1 = orient2(p3, p4, p1);
+    let d2 = orient2(p3, p4, p2);
+    let d3 = orient2(p1, p2, p3);
+    let d4 = orient2(p1, p2, p4);
+    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
+    {
+        return true;
+    }
+    if d1.abs() < 1e-12 && on_seg2(p3, p4, p1) {
+        return true;
+    }
+    if d2.abs() < 1e-12 && on_seg2(p3, p4, p2) {
+        return true;
+    }
+    if d3.abs() < 1e-12 && on_seg2(p1, p2, p3) {
+        return true;
+    }
+    if d4.abs() < 1e-12 && on_seg2(p1, p2, p4) {
+        return true;
+    }
+    false
+}
+
+fn point_in_rect(p: [f64; 2], r: (f64, f64, f64, f64)) -> bool {
+    p[0] >= r.0 && p[0] <= r.2 && p[1] >= r.1 && p[1] <= r.3
+}
+
+/// Pełny poligon obszaru (obrys + dziury) do testów zawierania.
+fn full_area_poly(a: &forest_core::preset::AreaDef) -> forest_core::geojson::Polygon {
+    let mut rings = vec![a.polygon.clone()];
+    rings.extend(a.holes.iter().filter(|h| h.len() >= 3).cloned());
+    forest_core::geojson::Polygon { rings }
+}
+
+/// Czy obszar styka się z prostokątem (wierzchołek w środku, róg w poligonie
+/// albo przecięcie krawędzi) — dokładniej niż sam test bbox.
+fn area_intersects_rect(a: &forest_core::preset::AreaDef, rect: (f64, f64, f64, f64)) -> bool {
+    let ring = &a.polygon;
+    if ring.len() < 3 {
+        return false;
+    }
+    let (bx0, by0, bx1, by1) = poly_bbox(ring);
+    if bx0 > rect.2 || bx1 < rect.0 || by0 > rect.3 || by1 < rect.1 {
+        return false;
+    }
+    // mały obszar w całości wewnątrz ramki
+    if ring.iter().any(|p| point_in_rect(*p, rect)) {
+        return true;
+    }
+    // ramka w całości wewnątrz obszaru (np. wielki obszar, mała ramka)
+    let poly = full_area_poly(a);
+    let corners = [
+        [rect.0, rect.1],
+        [rect.2, rect.1],
+        [rect.2, rect.3],
+        [rect.0, rect.3],
+    ];
+    if corners
+        .iter()
+        .any(|c| forest_core::geojson::point_in_polygon(&poly, c[0], c[1]))
+    {
+        return true;
+    }
+    // częściowe zachodzenie — przecięcie krawędzi
+    let redges = [
+        (corners[0], corners[1]),
+        (corners[1], corners[2]),
+        (corners[2], corners[3]),
+        (corners[3], corners[0]),
+    ];
+    ring_edges_intersect(ring, &redges)
+}
+
+/// Czy obszar styka się z poligonem lassa (zawieranie w obie strony albo
+/// przecięcie krawędzi obrysu).
+fn area_intersects_poly(a: &forest_core::preset::AreaDef, lasso: &[[f64; 2]]) -> bool {
+    let ring = &a.polygon;
+    if ring.len() < 3 || lasso.len() < 3 {
+        return false;
+    }
+    let (ax0, ay0, ax1, ay1) = poly_bbox(ring);
+    let (lx0, ly0, lx1, ly1) = poly_bbox(lasso);
+    if ax0 > lx1 || ax1 < lx0 || ay0 > ly1 || ay1 < ly0 {
+        return false;
+    }
+    let poly = full_area_poly(a);
+    // wierzchołek obszaru w lassie
+    if ring.iter().any(|p| ring_contains_simple(lasso, p[0], p[1])) {
+        return true;
+    }
+    // wierzchołek lassa w obszarze (z dziurami)
+    if lasso
+        .iter()
+        .any(|p| forest_core::geojson::point_in_polygon(&poly, p[0], p[1]))
+    {
+        return true;
+    }
+    // przecięcie krawędzi obrysów
+    let n = lasso.len();
+    let mut ledges: Vec<([f64; 2], [f64; 2])> = Vec::with_capacity(n);
+    let mut j = n - 1;
+    for i in 0..n {
+        ledges.push((lasso[j], lasso[i]));
+        j = i;
+    }
+    ring_edges_intersect(ring, &ledges)
+}
+
+/// Przecięcie krawędzi pierścienia (domkniętego) z listą odcinków.
+fn ring_edges_intersect(ring: &[[f64; 2]], edges: &[([f64; 2], [f64; 2])]) -> bool {
+    let n = ring.len();
+    if n < 2 {
+        return false;
+    }
+    let mut j = n - 1;
+    for i in 0..n {
+        for (q1, q2) in edges {
+            if segs_intersect(ring[j], ring[i], *q1, *q2) {
+                return true;
+            }
+        }
+        j = i;
+    }
+    false
+}
+
+/// Ray casting na pojedynczym pierścieniu (bez dziur) — do testu „punkt w lassie".
+fn ring_contains_simple(ring: &[[f64; 2]], x: f64, y: f64) -> bool {
+    let n = ring.len();
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let xi = ring[i][0];
+        let yi = ring[i][1];
+        let xj = ring[j][0];
+        let yj = ring[j][1];
+        if (yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
 }
 
 /// Twardy clamp widoku: mapa mniejsza od kanwy jest wycentrowana (pan = 0),

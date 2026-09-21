@@ -10,11 +10,12 @@ pub mod heightmap;
 pub mod layers;
 pub mod mask;
 pub mod preset;
+pub mod saved;
 pub mod scatter;
 pub mod shp;
 pub mod species;
 pub mod user_presets;
 
-pub use export_tb::{write_tb_file, write_tb_txt, export_trees_png, export_trees_png_with_layers, export_zones_png};
+pub use export_tb::{write_tb_file, write_tb_txt, export_trees_png, export_trees_png_with_layers, export_zones_png, parse_tb_txt, TbImport};
 pub use preset::ForestProject;
 pub use scatter::{generate, GenStats, PlacedObject};

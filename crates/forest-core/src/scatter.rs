@@ -15,7 +15,7 @@ use crate::heightmap::AscHeightmap;
 use crate::mask::{MaskImage, Rgb8};
 use crate::preset::{ElevationMode, ForestProject, MixEntry};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlacedObject {
     pub model: String,
     /// Współrzędne świata w metrach (origin SW, bez offsetu easting).
@@ -30,7 +30,7 @@ pub struct PlacedObject {
     pub species_index: usize,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct GenStats {
     pub total: usize,
     pub per_species: Vec<(String, usize)>,
@@ -93,7 +93,8 @@ impl GenStats {
 /// Callback postępu: argument = ułamek 0..1.
 pub type Progress<'a> = &'a dyn Fn(f64);
 
-const MAX_TOTAL_OBJECTS: usize = 2_000_000;
+/// Limit liczby obiektów (generowanie i import) — ochrona przed zalewaniem pamięci.
+pub const MAX_TOTAL_OBJECTS: usize = 2_000_000;
 /// Limit liczby stref z maski (mapa identyfikatorów pikseli to u8).
 const MAX_ZONES: usize = 254;
 

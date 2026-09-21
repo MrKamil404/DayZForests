@@ -64,6 +64,88 @@ pub fn write_tb_file(
     write_tb_txt(objects, project, &mut buf).map_err(|e| format!("Zapis TXT: {e}"))
 }
 
+/// Wynik importu pliku TB TXT (tego samego formatu, który produkuje eksport).
+#[derive(Clone, Debug, Default)]
+pub struct TbImport {
+    pub objects: Vec<PlacedObject>,
+    /// Pominięte wiersze: (numer wiersza, powód).
+    pub skipped: Vec<(usize, String)>,
+    /// Obiekty o modelu spoza biblioteki gatunków projektu (białe na podglądzie,
+    /// eksportują się z powrotem bez zmian).
+    pub unknown_models: usize,
+}
+
+/// Parsuje plik TB TXT do obiektów (odwrotność `write_tb_txt`):
+/// X/Y są w układzie mapy (z offsetami TB) — odejmujemy offsety projektu.
+/// Gatunek rozpoznawany po nazwie modelu (dopasowanie znormalizowane:
+/// bez `.p3d`/ścieżki, bez względu na wielkość liter); nieznane modele
+/// dostają `species_index = usize::MAX` (bezpieczne: podgląd i eksport
+/// używają fallbacków, a generowanie i tak buduje obiekty od nowa).
+pub fn parse_tb_txt(text: &str, project: &ForestProject) -> Result<TbImport, String> {
+    use crate::scatter::MAX_TOTAL_OBJECTS;
+    use crate::species::find_species_in;
+    let mut out = TbImport::default();
+    for (li, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let no = li + 1;
+        let mut fail = |why: &str| out.skipped.push((no, why.into()));
+        // "model";X;Y;yaw;pitch;roll;scale;elev;underground;(końcowy pusty)
+        let parts: Vec<&str> = line.split(';').collect();
+        if parts.len() < 9 {
+            fail("za mało pól (oczekiwano 9)");
+            continue;
+        }
+        let model = parts[0].trim().trim_matches('"');
+        if model.is_empty() {
+            fail("pusta nazwa modelu");
+            continue;
+        }
+        let mut nums = [0.0f64; 7];
+        let mut bad: Option<usize> = None;
+        for (k, v) in parts[1..8].iter().enumerate() {
+            match v.trim().parse::<f64>() {
+                Ok(n) => nums[k] = n,
+                Err(_) => {
+                    bad = Some(k + 1);
+                    break;
+                }
+            }
+        }
+        if let Some(k) = bad {
+            fail(&format!("pole {k} nie jest liczbą"));
+            continue;
+        }
+        if out.objects.len() >= MAX_TOTAL_OBJECTS {
+            return Err(format!(
+                "Plik ma więcej niż {MAX_TOTAL_OBJECTS} obiektów — limit jak przy generowaniu"
+            ));
+        }
+        let species_index = find_species_in(&project.species, model).unwrap_or(usize::MAX);
+        if species_index == usize::MAX {
+            out.unknown_models += 1;
+        }
+        out.objects.push(PlacedObject {
+            model: model.into(),
+            x: nums[0] - project.easting_offset,
+            y: nums[1] - project.northing_offset,
+            yaw: nums[2],
+            pitch: nums[3],
+            roll: nums[4],
+            scale: nums[5],
+            elevation: nums[6],
+            zone_index: 0,
+            species_index,
+        });
+    }
+    if out.objects.is_empty() {
+        return Err("Brak poprawnych wierszy obiektów w pliku".into());
+    }
+    Ok(out)
+}
+
 /// Eksportuje warstwę drzew jako przezroczysty PNG (rozdzielczość `res`x`res`).
 /// `colors[i]` = kolor gatunku o indeksie `i`. Zwraca liczbę narysowanych obiektów.
 pub fn export_trees_png(
@@ -191,13 +273,14 @@ pub fn export_trees_png(
 }
 
 /// Eksportuje warstwę drzew jako PNG z kolorami warstw (layers.cfg).
+/// `species_layer_map` = mapa znormalizowany model TB → nazwa warstwy
+/// (kluczowanie modelem, nie indeksem — odporne na import/dodawanie gatunków).
 /// `layer_colors` = mapa nazwa warstwy → kolor RGB.
-/// `species_layer_map` = mapa indeks gatunku → nazwa warstwy.
 /// Zwraca liczbę narysowanych obiektów.
 pub fn export_trees_png_with_layers(
     objects: &[PlacedObject],
     project: &ForestProject,
-    species_layer_map: &std::collections::HashMap<usize, String>,
+    species_layer_map: &std::collections::HashMap<String, String>,
     layer_colors: &std::collections::HashMap<String, [u8; 3]>,
     res: u32,
     path: impl AsRef<std::path::Path>,
@@ -220,8 +303,9 @@ pub fn export_trees_png_with_layers(
         for o in objects {
             let px = (o.x * sx) as i64;
             let py = ((map - o.y) * sy) as i64;
+            // warstwa po MODELU TB (nie po indeksie gatunku)
             let c = species_layer_map
-                .get(&o.species_index)
+                .get(&crate::species::normalize_model_name(&o.model))
                 .and_then(|layer_name| layer_colors.get(layer_name))
                 .copied()
                 .unwrap_or([255, 255, 255]);
@@ -258,9 +342,9 @@ pub fn export_trees_png_with_layers(
         let px = (o.x * sx) as i64;
         let py = ((map - o.y) * sy) as i64;
 
-        // pobierz kolor z warstwy przypisanej do gatunku
+        // pobierz kolor z warstwy przypisanej do MODELU TB obiektu
         let c = species_layer_map
-            .get(&o.species_index)
+            .get(&crate::species::normalize_model_name(&o.model))
             .and_then(|layer_name| layer_colors.get(layer_name))
             .copied()
             .unwrap_or([255, 255, 255]);
@@ -342,7 +426,7 @@ pub fn export_trees_png_with_layers(
 /// Eksport warstw stref jako dużych plam z kolorami warstw (tryb Zones dla warstw).
 fn export_zones_png_with_layers(
     project: &ForestProject,
-    species_layer_map: &std::collections::HashMap<usize, String>,
+    species_layer_map: &std::collections::HashMap<String, String>,
     layer_colors: &std::collections::HashMap<String, [u8; 3]>,
     res: u32,
     path: impl AsRef<std::path::Path>,
@@ -357,7 +441,10 @@ fn export_zones_png_with_layers(
         .map(|z| {
             z.species_weights
                 .first()
-                .and_then(|(si, _)| species_layer_map.get(si))
+                .and_then(|(si, _)| project.species.get(*si))
+                .and_then(|sp| {
+                    species_layer_map.get(&crate::species::normalize_model_name(&sp.model))
+                })
                 .and_then(|ln| layer_colors.get(ln))
                 .copied()
                 .unwrap_or([255, 255, 255])
@@ -527,5 +614,95 @@ mod tests {
         assert_eq!([center[0], center[1], center[2], center[3]], [255, 0, 0, 255]);
         let corner = img.get_pixel(5, 5);
         assert_eq!(corner[3], 0);
+    }
+
+    #[test]
+    fn export_import_roundtrip() {
+        use crate::species::SpeciesDef;
+        let proj = ForestProject {
+            easting_offset: 200_000.0,
+            northing_offset: 0.0,
+            species: vec![SpeciesDef::new("Brzoza", "t_BetulaPendula_2f", 0.9, 1.1)],
+            ..Default::default()
+        };
+        let objs = vec![
+            PlacedObject {
+                model: "t_BetulaPendula_2f".into(),
+                x: 456.5,
+                y: 1032.25,
+                yaw: 10.0,
+                pitch: 0.0,
+                roll: 0.0,
+                scale: 1.0,
+                elevation: 3.5,
+                zone_index: 0,
+                species_index: 0,
+            },
+            PlacedObject {
+                model: "p_UnknownTree".into(),
+                x: 100.0,
+                y: 200.0,
+                yaw: 0.0,
+                pitch: 0.0,
+                roll: 0.0,
+                scale: 1.0,
+                elevation: 0.0,
+                zone_index: 0,
+                species_index: usize::MAX,
+            },
+        ];
+        let mut buf: Vec<u8> = Vec::new();
+        write_tb_txt(&objs, &proj, &mut buf).unwrap();
+        let text = String::from_utf8(buf).unwrap();
+        let imp = parse_tb_txt(&text, &proj).unwrap();
+        assert_eq!(imp.objects.len(), 2);
+        assert_eq!(imp.unknown_models, 1);
+        assert!(imp.skipped.is_empty());
+        // offsety zdjęte z powrotem (z dokładnością formatu %.6f)
+        assert!((imp.objects[0].x - 456.5).abs() < 1e-6);
+        assert!((imp.objects[0].y - 1032.25).abs() < 1e-6);
+        assert_eq!(imp.objects[0].species_index, 0);
+        assert_eq!(imp.objects[1].species_index, usize::MAX);
+        assert_eq!(imp.objects[0].elevation, 3.5);
+    }
+
+    #[test]
+    fn import_skips_garbage_but_keeps_good_rows() {
+        let proj = ForestProject {
+            easting_offset: 200_000.0,
+            ..Default::default()
+        };
+        let text = "śmieci bez średników\n\
+            \"x\";200001.000000;2.000000;0;0;0;1;0;0;\n\
+            \"y\";nie-liczba;2;0;0;0;1;0;0;\n\
+            \n";
+        let imp = parse_tb_txt(text, &proj).unwrap();
+        assert_eq!(imp.objects.len(), 1);
+        assert_eq!(imp.objects[0].model, "x");
+        assert_eq!(imp.skipped.len(), 2);
+    }
+
+    #[test]
+    fn import_empty_is_error() {
+        let proj = ForestProject::default();
+        assert!(parse_tb_txt("", &proj).is_err());
+        assert!(parse_tb_txt("   \n\n", &proj).is_err());
+    }
+
+    #[test]
+    fn import_matches_despite_case_p3d_and_path() {
+        use crate::species::SpeciesDef;
+        let proj = ForestProject {
+            easting_offset: 0.0,
+            northing_offset: 0.0,
+            species: vec![SpeciesDef::new("Brzoza", "t_BetulaPendula_2f", 0.9, 1.1)],
+            ..Default::default()
+        };
+        let text = "\"T_BETULAPENDULA_2F.P3D\";1;2;0;0;0;1;0;0;\n\
+            \"dz\\plants\\tree\\t_betulapendula_2f\";3;4;0;0;0;1;0;0;\n";
+        let imp = parse_tb_txt(text, &proj).unwrap();
+        assert_eq!(imp.objects.len(), 2);
+        assert_eq!(imp.unknown_models, 0);
+        assert!(imp.objects.iter().all(|o| o.species_index == 0));
     }
 }

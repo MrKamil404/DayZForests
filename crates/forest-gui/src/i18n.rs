@@ -47,11 +47,14 @@ pub struct UiPrefs {
     /// Skróty użytkownika: (nazwa akcji, skrót "Ctrl+O" / None = wyłączony).
     #[serde(default)]
     pub shortcuts: Vec<(String, Option<String>)>,
+    /// Przy zapisie projektu zapisuj też wygenerowane obiekty (sidecar).
+    #[serde(default)]
+    pub save_objects_with_project: bool,
 }
 
 impl Default for UiPrefs {
     fn default() -> Self {
-        Self { language: "pl".into(), shortcuts: Vec::new() }
+        Self { language: "pl".into(), shortcuts: Vec::new(), save_objects_with_project: false }
     }
 }
 
@@ -84,6 +87,43 @@ const DICT: &[Entry] = &[
     ("Generuj", "Generate", "Generieren"),
     ("Eksport TXT", "Export TXT", "TXT-Export"),
     ("Eksport PNG", "Export PNG", "PNG-Export"),
+    ("Import TXT", "Import TXT", "TXT-Import"),
+    (
+        "Wczytaj obiekty z pliku TB TXT (ten sam format co eksport)",
+        "Load objects from a TB TXT file (same format as export)",
+        "Objekte aus TB-TXT-Datei laden (gleiches Format wie Export)",
+    ),
+    (
+        "Wczytaj plik Terrain Buildera (TXT)",
+        "Open Terrain Builder file (TXT)",
+        "Terrain-Builder-Datei öffnen (TXT)",
+    ),
+    ("Import obiektów", "Import objects", "Objekte importieren"),
+    (
+        "Plik {0}: {1} obiektów. Import ZASTĄPI {2} istniejących obiektów. Kontynuować?",
+        "File {0}: {1} objects. Import will REPLACE {2} existing objects. Continue?",
+        "Datei {0}: {1} Objekte. Import ERSETZT {2} vorhandene Objekte. Fortfahren?",
+    ),
+    (
+        "Importuj (zastąp)",
+        "Import (replace)",
+        "Importieren (ersetzen)",
+    ),
+    (
+        "Dopasowano {0} gatunków z biblioteki (dodano do projektu).",
+        "Matched {0} species from the library (added to the project).",
+        "{0} Arten aus der Bibliothek zugeordnet (zum Projekt hinzugefügt).",
+    ),
+    (
+        "{0} obiektów o modelach spoza biblioteki (białe na podglądzie): {1}.",
+        "{0} objects with models outside the library (white in preview): {1}.",
+        "{0} Objekte mit Modellen außerhalb der Bibliothek (weiß in der Vorschau): {1}.",
+    ),
+    (
+        "{0} obiektów ma modele spoza projektu — pasujące gatunki zostaną dobrane z biblioteki.",
+        "{0} objects have models outside the project — matching species will be picked from the library.",
+        "{0} Objekte haben Modelle außerhalb des Projekts — passende Arten werden aus der Bibliothek übernommen.",
+    ),
     ("Wczytaj", "Open", "Öffnen"),
     ("Zapisz", "Save", "Speichern"),
     ("Rysuj", "Draw", "Zeichnen"),
@@ -321,10 +361,32 @@ const DICT: &[Entry] = &[
         "Click an area = toggle selection; drag = rubber-band select multiple",
         "Klick auf Bereich = Auswahl umschalten; ziehen = Rahmen für Mehrfachauswahl",
     ),
+    ("Prostokąt", "Rectangle", "Rechteck"),
+    ("Lasso", "Lasso", "Lasso"),
+    (
+        "Zaznaczanie ramką prostokątną",
+        "Rubber-band rectangle selection",
+        "Rechteck-Auswahl",
+    ),
+    (
+        "Zaznaczanie odręcznym obrysem (dokładniejsze)",
+        "Freehand lasso selection (more precise)",
+        "Freihand-Lasso-Auswahl (genauer)",
+    ),
     (
         "Wyczyść zaznaczenie",
         "Clear selection",
         "Auswahl aufheben",
+    ),
+    (
+        "Obiekty w projekcie",
+        "Objects in project",
+        "Objekte im Projekt",
+    ),
+    (
+        "Zapisuj wygenerowane obiekty razem z projektem",
+        "Save generated objects together with the project",
+        "Generierte Objekte zusammen mit dem Projekt speichern",
     ),
     (
         "Tylko zaznaczone ({0})",

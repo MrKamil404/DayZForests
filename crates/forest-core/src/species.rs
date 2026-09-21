@@ -56,6 +56,32 @@ impl SpeciesDef {
     }
 }
 
+/// Normalizacja nazwy modelu do porównań: bez cudzysłowu i spacji,
+/// bez rozszerzenia `.p3d`, sama nazwa pliku bez ścieżki, małe litery.
+/// Dzięki temu import dogaduje się z plikami edytowanymi ręcznie
+/// (`"T_X.P3D"`, `dz\plants\tree\t_x.p3d`, …).
+pub fn normalize_model_name(s: &str) -> String {
+    let t = s.trim().trim_matches('"').trim();
+    let t = t
+        .strip_suffix(".p3d")
+        .or_else(|| t.strip_suffix(".P3D"))
+        .or_else(|| t.strip_suffix(".P3d"))
+        .unwrap_or(t);
+    let base = t.rsplit(['/', '\\']).next().unwrap_or(t);
+    base.to_lowercase()
+}
+
+/// Indeks gatunku o danej nazwie modelu (dopasowanie znormalizowane).
+pub fn find_species_in(species: &[SpeciesDef], model: &str) -> Option<usize> {
+    let n = normalize_model_name(model);
+    if n.is_empty() {
+        return None;
+    }
+    species
+        .iter()
+        .position(|s| normalize_model_name(&s.model) == n)
+}
+
 /// Wbudowana biblioteka roślinności vanilla DayZ — WSZYSTKIE nazwy zweryfikowane
 /// względem P:\DZ\plants*, P:\DZ\plants_bliss i P:\DZ\plants_sakhal
 /// (żywe t_*/b_* oraz martwe drewno d_* — pniaki i wykroty).

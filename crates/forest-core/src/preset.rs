@@ -402,6 +402,17 @@ pub struct ForestProject {
     #[serde(default)]
     pub layer_library: crate::layers::LayerLibrary,
 
+    /// Przypisanie warstw do gatunków PO MODELU TB (znormalizowanym):
+    /// model → nazwa warstwy. Kluczowanie modelem (nie indeksem), żeby
+    /// import, dodawanie i usuwanie gatunków nie rozjeżdżało kolorów.
+    #[serde(default)]
+    pub species_layers: std::collections::HashMap<String, String>,
+    /// Przypisanie warstw do GRUP gatunków: grupa → nazwa warstwy.
+    /// Podstawa do automatycznego nadawania warstw (import, przycisk
+    /// "Zastosuj grupy do gatunków").
+    #[serde(default)]
+    pub group_layers: std::collections::HashMap<String, String>,
+
     /// Ustawienia eksportu PNG (rozmiar i kształt kropek).
     #[serde(default)]
     pub png_settings: PngSettings,
@@ -500,6 +511,8 @@ impl Default for ForestProject {
             edges: EdgeSettings::default(),
             paths: ProjectPaths::default(),
             layer_library: crate::layers::LayerLibrary::default(),
+            species_layers: std::collections::HashMap::new(),
+            group_layers: std::collections::HashMap::new(),
             png_settings: PngSettings::default(),
             generation_order: default_generation_order(),
         }
@@ -517,6 +530,28 @@ impl ForestProject {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("Odczyt projektu: {e}"))?;
         serde_json::from_str(&text).map_err(|e| format!("Parse projektu: {e}"))
+    }
+
+    /// Klucz przypisań warstw dla modelu TB (normalizacja jak przy imporcie).
+    pub fn layer_key(model: &str) -> String {
+        crate::species::normalize_model_name(model)
+    }
+
+    /// Uzupełnij `species_layers` wg `group_layers` dla gatunków bez
+    /// przypisania. Zwraca liczbę nadanych przypisań. Używane po imporcie
+    /// obiektów i przyciskiem "Zastosuj grupy do gatunków".
+    pub fn fill_layers_from_groups(&mut self) -> usize {
+        let mut n = 0;
+        for sp in &self.species {
+            let k = Self::layer_key(&sp.model);
+            if !self.species_layers.contains_key(&k) {
+                if let Some(l) = self.group_layers.get(&sp.group).cloned() {
+                    self.species_layers.insert(k, l);
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     /// Usuwa z stref/obszarów odwołania do nieistniejących gatunków.
@@ -563,6 +598,28 @@ impl ForestProject {
                         m.species_weights.retain(|(i, w)| *i < n && *w > 0.0);
                     }
                 }
+            }
+        }
+        // --- warstwy: kluczowanie modelem — usuń wpisy dla nieistniejących
+        // modeli i warstw (porządek po edycji biblioteki/layers.cfg)
+        {
+            use crate::species::normalize_model_name;
+            let models: std::collections::HashSet<String> = self
+                .species
+                .iter()
+                .map(|s| normalize_model_name(&s.model))
+                .collect();
+            self.species_layers
+                .retain(|m, _| models.contains(m));
+            if !self.layer_library.layers.is_empty() {
+                let layers: std::collections::HashSet<&str> = self
+                    .layer_library
+                    .layers
+                    .iter()
+                    .map(|l| l.name.as_str())
+                    .collect();
+                self.species_layers.retain(|_, l| layers.contains(l.as_str()));
+                self.group_layers.retain(|_, l| layers.contains(l.as_str()));
             }
         }
         // --- generation_order: per-obszarowa, dokładna kolejność ---

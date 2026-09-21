@@ -173,6 +173,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             exclusions_geojson: Some(gj_path.to_string_lossy().to_string()),
         },
         layer_library: Default::default(),
+        species_layers: Default::default(),
+        group_layers: Default::default(),
         png_settings: Default::default(),
         generation_order: vec![
             forest_core::preset::GenStep::Mask,
