@@ -1258,6 +1258,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "forest-core",
+ "image 0.25.10",
  "rfd",
  "serde",
  "serde_json",

@@ -21,11 +21,21 @@ pub mod i18n;
 use i18n::{tr, tf, Lang};
 
 fn main() -> eframe::Result<()> {
+    let icon = image::load_from_memory(include_bytes!("../../../assets/app-icon.png"))
+        .expect("embedded application icon should be a valid PNG")
+        .to_rgba8();
+    let (icon_width, icon_height) = icon.dimensions();
+    let icon = egui::IconData {
+        rgba: icon.into_raw(),
+        width: icon_width,
+        height: icon_height,
+    };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([1024.0, 640.0])
-            .with_title("DayZ Forest Generator"),
+            .with_title("DayZ Forest Generator")
+            .with_icon(Arc::new(icon)),
         ..Default::default()
     };
     eframe::run_native(

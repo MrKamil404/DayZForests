@@ -2,6 +2,7 @@
 name = "forest-gui"
 version.workspace = true
 edition.workspace = true
+build = "build.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -9,3 +10,4 @@ forest-core = { path = "../forest-core" }
 eframe = "0.27"
 rfd = "0.12"
 serde_json = { workspace = true }
+image = { version = "0.25", default-features = false, features = ["png"] }

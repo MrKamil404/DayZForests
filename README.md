@@ -1,7 +1,11 @@
 # DayZ Forest Generator
 
+<p align="center">
+  <img src="assets/app-icon.png" alt="DayZ Forest Generator application icon" width="128">
+</p>
+
 A desktop forest generator for **DayZ**, built with Rust and egui. It places
-trees, shrubs, and other plant models from color coded map masks, drawn or
+trees, shrubs, and other plant models from color-coded map masks, drawn or
 imported polygons, or both. The result can be exported as a Terrain Builder
 object TXT file or a transparent PNG layer. A command line tool supports
 project validation and batch TXT generation.
@@ -16,7 +20,11 @@ Terrain Builder TXT export and GUI PNG rendering.
 ## Build and try it
 
 Install a stable Rust toolchain, then build the workspace from the repository
-root:
+root.
+
+On Windows, the GUI build embeds this icon in the executable and uses it for
+the window. Windows builds need the Windows SDK resource compiler and MSVC C++
+build tools (`rc.exe` and `cvtres.exe`).
 
 ```powershell
 cargo build --release
@@ -49,7 +57,7 @@ input paths are relative to it. To regenerate the sample assets, run
    satellite image (PNG/JPG) as a visual reference. The satellite image can
    also supply sampled colors for area or preset filters.
 3. **Configure generation sources.** Add mask colors as **Forest zones** and
-   assign species and density manually or from built in vegetation presets.
+   assign species and density manually or from built-in vegetation presets.
    Use **Draw** to create polygon **Areas**, or import polygons from
    Shapefile (`.shp`) or GeoJSON. Polygon holes are preserved; Shapefile
    `.dbf` attributes are ignored. Assign a preset, species, and density to
@@ -82,14 +90,48 @@ The **Species** panel lets you adjust model names and preview colors, and
 import/export species as JSON. **Forest zones** can also be imported/exported
 as JSON, while **Areas** can be exported as GeoJSON. Import `layers.cfg` in
 the **Layers** panel, assign layers to species or species groups, and use
-**Export PNG (layers)** for a layer colored tree image.
+**Export PNG (layers)** for a tree image colored with those layers.
 
 On the map, scroll to zoom around the cursor, drag to pan, and use **Fit
 view** or double click to reset the view. Draw polygons with left clicks;
 Enter or double click finishes, Esc cancels, and Backspace removes the last
-point. Self intersecting polygons are rejected with a location in the error
+point. Self-intersecting polygons are rejected with a location in the error
 message. The toolbar also supports area selection; polygon vertices can be
 edited with handles.
+
+## Screenshots
+
+The editor screenshots show the map preview, polygon areas, forest edge
+controls, and PNG layer export. The in-game images show forests placed with
+the generator.
+
+<table>
+  <tr>
+    <td align="center"><img src="images/full.png" alt="Forest Generator editor with a satellite map, tree overlay, and forest zone controls" width="480"></td>
+    <td align="center"><img src="images/areaborder.png" alt="Polygon forest areas and forest edge band settings" width="480"></td>
+    <td align="center"><img src="images/pngexport.png" alt="PNG export preview with Terrain Builder layer colors" width="480"></td>
+  </tr>
+  <tr>
+    <td align="center">Map editor with generated tree placements and forest zones.</td>
+    <td align="center">Polygon areas and configurable undergrowth along forest edges.</td>
+    <td align="center">PNG layer preview and imported Terrain Builder layer colors.</td>
+  </tr>
+</table>
+
+### In-game results
+
+<table>
+  <tr>
+    <td align="center"><img src="images/game1.png" alt="Autumn mixed forest with birches and conifers" width="320"></td>
+    <td align="center"><img src="images/game2.png" alt="Dense conifer forest with mixed understory" width="320"></td>
+    <td align="center"><img src="images/game3.png" alt="Open mixed forest on rolling terrain" width="320"></td>
+  </tr>
+  <tr>
+    <td align="center">An autumn mixed forest with birch and conifer models.</td>
+    <td align="center">A denser conifer stand with varied understory.</td>
+    <td align="center">A more open forest layout across rolling terrain.</td>
+  </tr>
+</table>
 
 ## Projects and saved objects
 
@@ -155,7 +197,7 @@ the configured easting offset when its coordinates use that convention.
 - Mask pixels are matched to the nearest configured zone color within the
   color tolerance; excluded colors have priority.
 - Density targets are based on source area in hectares and objects per
-  hectare. A seeded Poisson style sampler uses a shared spacing grid across
+  hectare. A seeded Poisson-disk sampler uses a shared spacing grid across
   enabled sources. It makes up to five passes with a smaller spacing when
   placement is constrained.
 - Clearings come from layered value noise. Heightmap samples and slope
