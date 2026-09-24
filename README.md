@@ -1,186 +1,178 @@
 # DayZ Forest Generator
 
-Desktopowy generator lasów dla **DayZ** (Rust + egui). Z maski satelitarnej
-PNG, opcjonalnej heightmapy ASC i wykluczeń GeoJSON generuje plik TXT
-z setkami tysięcy drzew gotowy do importu w **Terrain Builder** (DayZ Tools).
+A desktop forest generator for **DayZ**, built with Rust and egui. It places
+trees, shrubs, and other plant models from color coded map masks, drawn or
+imported polygons, or both. The result can be exported as a Terrain Builder
+object TXT file or a transparent PNG layer. A command line tool supports
+project validation and batch TXT generation.
 
-**Język interfejsu:** 🌐 Polski / English / Deutsch — przełącznik na pasku
-narzędzi; wybór zapisywany w `ui_settings.json`.
+The interface supports **Polski, English, and Deutsch**. Select a language in
+the toolbar; the choice and keyboard shortcuts are stored in `ui_settings.json`.
 
-![pipeline](docs/pipeline.svg)
+The pipeline accepts a mask and/or polygon areas, with optional heightmap,
+GeoJSON exclusions, and satellite color filters. It generates placements for
+Terrain Builder TXT export and GUI PNG rendering.
 
-```
-maska PNG ─┐
-heightmapa .asc ─┼─► silnik Poisson-disk ─► obiekty_tb.txt ─► Terrain Builder
-wykluczenia .geojson ─┘   (polany, proporcje,
-                           filtry wysokości/spadku)
-```
+## Build and try it
 
-## Budowanie
-
-Wymagany Rust (stable, tested 1.97+):
+Install a stable Rust toolchain, then build the workspace from the repository
+root:
 
 ```powershell
 cargo build --release
-# binarki:
-#   target\release\forest-gui.exe   — aplikacja desktopowa
-#   target\release\forest-cli.exe   — tryb wsadowy
 ```
 
-## Szybki start (przykładowe dane)
+On Windows, this produces `target\release\forest-gui.exe` and
+`target\release\forest-cli.exe`. The repository already includes a sample
+project, mask, heightmap, and exclusion file:
 
 ```powershell
-cargo run -p forest-core --example make_samples   # tworzy assets/samples/*
-.\target\release\forest-cli.exe run assets\samples\sample_project.json -o output\obiekty_tb.txt
-.\target\release\forest-gui.exe                    # albo GUI: "Wczytaj projekt" -> sample_project.json
+.\target\release\forest-gui.exe
+# In the GUI, choose Open and select assets\samples\sample_project.json.
+
+.\target\release\forest-cli.exe validate assets\samples\sample_project.json
+.\target\release\forest-cli.exe run assets\samples\sample_project.json -o obiekty_tb.txt
 ```
 
-Przykład: mapa 15 360 m, 2 strefy lasu, droga i jezioro wykluczone,
-~1,3 mln obiektów w ~40 s.
+Run these commands from the repository root because the sample project's
+input paths are relative to it. To regenerate the sample assets, run
+`cargo run -p forest-core --example make_samples`.
 
-## GUI — przepływ pracy
+## GUI workflow
 
-Układ okna: **lewy panel = ustawienia** (pliki, źródła, mapa, filtry, rozrzut,
-granica, gatunki), **prawy panel = presety i wygenerowane warstwy** (strefy,
-moje presety, obszary, wynik generowania ze statystyką per źródło).
+1. **Set up the map.** Under **Files**, load a PNG, BMP, or TGA mask whose
+   colors represent forest zones. A mask is optional if you use polygons
+   instead. Set the square map size and Terrain Builder easting/northing
+   offsets under **Parameters**. The defaults are 15,360 m, 200,000, and 0.
+2. **Add optional inputs.** Load an ASC heightmap for altitude/slope filters
+   and absolute elevation, a GeoJSON file of exclusion polygons, and a
+   satellite image (PNG/JPG) as a visual reference. The satellite image can
+   also supply sampled colors for area or preset filters.
+3. **Configure generation sources.** Add mask colors as **Forest zones** and
+   assign species and density manually or from built in vegetation presets.
+   Use **Draw** to create polygon **Areas**, or import polygons from
+   Shapefile (`.shp`) or GeoJSON. Polygon holes are preserved; Shapefile
+   `.dbf` attributes are ignored. Assign a preset, species, and density to
+   each area that should generate objects. You can enable mask zones and
+   areas independently under **Parameters**.
+4. **Shape the forest.** Set species weights, density, scale, clearings,
+   altitude and slope limits, mask color tolerance, and spacing. An area can
+   mix presets across Perlin noise patches, use sampled satellite colors to
+   include or exclude locations, and override the global forest edge band.
+   The optional edge band adds undergrowth around boundaries, with blending
+   and a jagged edge. Customize or import/export user presets in **My
+   presets**; they are saved to `presets_user.json` in the working directory.
+5. **Set the generation order.** In **Generation order**, move the mask,
+   individual areas, and mask color cuts to control which objects are placed
+   first. Areas can also act as cutting polygons. A cut removes objects
+   created before that step, so later steps can refill the cleared space.
+   Mask color cuts support a distance buffer and also affect polygon objects
+   when placed after them.
+6. **Generate and export.** Choose **Generate** to preview placements and
+   per source statistics. **Export TXT** writes Terrain Builder objects.
+   **Export PNG** writes a transparent layer using the mode selected under
+   **PNG settings**: Trees, Zones (requires a mask), or Preview. Tree mode
+   supports dot size, shape, and size/rotation variation. The PNG resolution
+   is normally one pixel per map meter, clamped to 64–16,384 pixels per side.
+   Import a Terrain Builder TXT with **Import TXT** to inspect or re-export
+   its objects; importing replaces the current generated objects after
+   confirmation.
 
-1. **Pliki** → wczytaj maskę PNG/BMP/TGA (kolory = strefy lasu).
-   Opcjonalnie dołącz **podkład satelitarny** (PNG/JPG) — rysowany pod maską
-   z regulowanym kryciem, przydatny jako odniesienie przy strojeniu stref.
-2. Opcjonalnie: heightmapa `.asc` (filtry wysokości/spadku, elevation absolute)
-   oraz wykluczenia `.geojson` (czerwone obrysy na podglądzie).
-3. **Strefy lasu** → dodaj strefę jednym kliknięciem z **presetu roślinności**
-   (grupy: Iglaste / Liściaste / Mieszane / Krzewy i zarośla — każdy preset
-   ustawia gęstość i proporcje gatunków) albo klikając wolny kolor z maski;
-   wszystko można potem dostroić ręcznie.
-   **📚 Moje presety** — edytowalne szablony: ⧉ kopiuj wbudowane, twórz własne,
-   zmieniaj nazwy/grupy/gęstości/wagi gatunków (po nazwie modelu — przenośne).
-   Zapisywane do `presets_user.json` (przycisk 💾; ★ w listach = moje presety).
-3a. **Obszary (poligony)** — alternatywa dla maski: kliknij „✏ Rysuj obszar” i
-   klikaj wierzchołki LPM na mapie (Enter/dwuklik = zakończ, Esc = anuluj,
-   Backspace = cofnij punkt). Obrys **nie może przecinać samego siebie** —
-   generator odmówi z opisem. Można generować wyłącznie z poligonów, bez maski.
-   Można też **📥 importować poligony z Shapefile (`.shp`)** — każdy poligon
-   staje się osobnym obszarem (dziury/wycięcia są zachowane; atrybuty `.dbf`
-   nie są importowane). Współrzędne w układzie TB (easting ≥ 100 000) są
-   automatycznie normalizowane.
-   **Edycja obszaru:** w 📐 Obszary kliknij **✏**, potem na mapie: przeciągnij
-   biały uchwyt = przesuń wierzchołek, kliknij zielony punkt (środek krawędzi)
-   = dodaj wierzchołek, Backspace = usuń wybrany, Esc/Enter/dwuklik = koniec.
-3b. **⚙ Źródła generowania** — przełączniki: strefy z maski / obszary rysowane /
-   granica lasu. Wyłączone źródła są pomijane niezależnie od reszty konfiguracji.
-3c. **Granica lasu** — opcjonalny pas krzewów/podrostu wzdłuż krawędzi lasu
-   (szerokość pasa, gęstość, gatunki). Działa zarówno dla stref z maski
-   (pas do wewnątrz), jak i dla poligonów (po obu stronach obrysu).
-   **Wtapianie** — gęstość zanika z odległością od granicy (5 warstw,
-   najgęściej przy samej krawędzi). **Poszarpanie [m]** — szum przesuwający
-   efektywną linię lasu, dzięki czemu brzeg nie jest równy jak od linijki
-   (dotyczy też obrysów rysowanych poligonów). **Wtapianie w las [m]** —
-   jak głęboko od krawędzi gęstość drzew narasta 0 → pełna.
-3d. **Własna granica per-obszar** — w panelu 📐 Obszary zaznacz „Własna
-   granica", aby nadpisać globalne parametry dla tego jednego obszaru.
-3e. **✂ Wycinanie (kolor + bufor)** — usuwa WYGENEROWANE obiekty w buforze
-   [m] wokół pikseli wybranego koloru maski (np. szare drogi + 10 m).
-   Działa na wszystkie źródła, także rysowane poligony; nakładane przy każdym
-   generowaniu. Ustawienia z pomarańczową etykietą mają ⟲ do wartości
-   domyślnej obok pola.
-4. **Filtry / Rozrzut** → min./maks. wysokość, maks. spadek, tolerancja koloru,
-   mnożnik odstępów, skala i siła polan oraz **globalny zakres skali obiektów**
-   (dodatkowy mnożnik losowany dla każdego drzewa, mnożony przez skalę gatunku).
-5. **▶ Generuj** → podgląd punktów na masce (kolor = gatunek), statystyki.
-6. **💾 Eksport TXT (TB)** → zapis pliku dla Terrain Buildera.
-   **🖼 Eksport PNG (drzewa)** → przezroczysta warstwa drzew (kropki w kolorach
-   gatunków) w rozdzielczości równej rozmiarowi mapy (1 px = 1 m).
-7. **💾 Zapisz projekt** → cały setup w jednym `.json` (ścieżki + parametry).
-8. **🌳 Gatunki → 🎨** → ustaw indywidualny kolor gatunku: własny (paleta
-   kolorów) albo wybrany z wczytanej maski („Kolor z maski"). Kolor ten widnieje
-   w podglądzie, nakładce drzew i eksporcie PNG; „⟲ auto" przywraca automat.
+The **Species** panel lets you adjust model names and preview colors, and
+import/export species as JSON. **Forest zones** can also be imported/exported
+as JSON, while **Areas** can be exported as GeoJSON. Import `layers.cfg` in
+the **Layers** panel, assign layers to species or species groups, and use
+**Export PNG (layers)** for a layer colored tree image.
 
-Kanvas: scroll = zoom do kursora, LPM/PPM drag = pan, **dwuklik** lub
-„Dopasuj widok” = reset. Widok jest przyciągany — mapa nie może wylecieć
-poza ekran (przy oddaleniu mniejszym od kanwy jest automatycznie wycentrowana).
+On the map, scroll to zoom around the cursor, drag to pan, and use **Fit
+view** or double click to reset the view. Draw polygons with left clicks;
+Enter or double click finishes, Esc cancels, and Backspace removes the last
+point. Self intersecting polygons are rejected with a location in the error
+message. The toolbar also supports area selection; polygon vertices can be
+edited with handles.
 
-## Format eksportu (Terrain Builder)
+## Projects and saved objects
 
-Każdy wiersz:
+**Save** writes the project settings, input paths, zones, areas, species,
+generation order, layers, and PNG settings to a JSON file. Once the project
+has a path, the GUI also autosaves it about every 60 seconds.
 
+Generated placements are optional separate data. Enable **Objects in
+project** in the toolbar to save them beside `forest.json` as
+`forest.objects.json`; opening the project restores those objects and their
+statistics. With the option off, saving the project removes an existing
+objects sidecar. The preference is stored in `ui_settings.json`.
+
+## Command line interface
+
+```text
+forest-cli init <project.json>
+forest-cli validate <project.json>
+forest-cli check-models <project.json>
+forest-cli run <project.json> [-o <output.txt>] [--seed <number>] [--quiet]
 ```
+
+`init` creates an editable starter project; configure its input paths before
+running it. `validate` checks project settings. `check-models` scans
+`P:\DZ\plants*` for model names referenced by the project and requires a
+mounted DayZ work drive. `run` generates and writes a Terrain Builder TXT;
+its default output name is `obiekty_tb.txt`. The CLI uses the same project
+settings and generation engine as the GUI.
+
+## Terrain Builder export
+
+Each TXT line has this form:
+
+```text
 "t_PiceaAbies_2f";211294.535483;8315.806183;21.757461;1.072276;0.410091;1.100093;0.000000;0;
 ```
 
-`"model";X;Y;Yaw;Pitch;Roll;Scale;Elevation;Underground;` — X zawiera **easting offset
-(domyślnie +200 000)**, Y ewentualny northing offset. `Underground` zawsze `0`
-(flaga wymagana przez TB od pełnej aktualizacji DayZ).
-
-### Konwencja współrzędnych (jak w mapach DayZ/Arma)
-
-Lewy dolny róg (SW) mapy to **X = 200000, Y = 0** (fałszywy UTM easting;
-ChernarusPlus: 15360×15360 m). W heightmapie ASC odpowiada temu nagłówek
-`xllcorner 200000` / `yllcorner 0`. Program ma te wartości jako domyślne
-(pola *Easting/Northing offset*), a parser ASC sam rozpoznaje układ TB
-(`xllcorner ≥ 100000` → traktuje współrzędne świata z offsetem). Nazwa modelu musi
-istnieć w **Template Library** projektu TB (domyślna biblioteka programu
-używa nazw vanilla z `dz\plants\tree\` i `dz\plants\bush\`, np.
-`t_BetulaPendula_2f` — dostosuj do własnej biblioteki w zakładce „Gatunki”).
-
-Import w TB: `Objects → Import → Objects…`, wybierz plik, odznacz *Threshold
-options*, format rekordu **Terrain Builder**, a przy pytaniu o wysokość wybierz
-**relative to terrain** (gdy `ElevationMode = relative`) lub **absolute**
-(gdy `absolute (z ASC)`).
-
-**Ważne:** Terrain Builder odrzuca cały import (`Wrong file format or source
-template not found`), jeśli choć jednego modelu z pliku nie ma w Template
-Library. Wbudowana biblioteka (332 gatunki w grupach: Liściaste / Iglaste /
-Krzewy / Bliss / Sakhal, w tym pniaki i wykroty `d_*`, oraz 31 presetów
-stref (w tym grupy „Pniaki i wykroty" i gotowe miksy na pas graniczny)")
-zawiera wyłącznie nazwy zweryfikowane z
-P:\DZ\plants, P:\DZ\plants_bliss i P:\DZ\plants_sakhal — przed importem użyj
-**🔍 Sprawdź modele na P:\\** (GUI, zakładka 🌳 Gatunki) albo
-`forest-cli check-models projekt.json`.
-
-## CLI
-
-```
-forest-cli init projekt.json            przykładowy projekt do edycji
-forest-cli validate projekt.json        walidacja konfiguracji
-forest-cli run projekt.json [-o out.txt] [--seed N] [--quiet]
+```text
+"model";X;Y;Yaw;Pitch;Roll;Scale;Elevation;Underground;
 ```
 
-## Jak działa silnik
+The exporter adds the project's easting offset to X and northing offset to
+Y. The southwest map corner is therefore X = 200,000 and Y = 0 with the
+defaults. `Underground` is always `0`. Relative elevation exports zero;
+absolute elevation samples the ASC heightmap. Select the corresponding
+relative or absolute placement option when importing into Terrain Builder.
 
-- **Klasyfikacja maski**: każdy piksel trafia do strefy po najbliższym kolorze
-  z palety (tolerancja = suma różnic kanałów); kolory wykluczone mają priorytet.
-- **Cel gęstości**: `liczba_pikseli × pole_piksela [ha] × szt/ha`.
-- **Poisson-disk (dart throwing)**: losowe próbkowanie pikseli strefy z jitterem,
-  siatka przestrzenna pilnuje minimalnego odstępu
-  `d = spacing × √(0.7 · A / cel)`. Gdy filtry/polany utrudniają osiągnięcie
-  celu, kolejne przebiegi zmniejszają `d` (max 5 przebiegów × 0.85).
-- **Polany**: 3-oktawowy value noise; próg dobrany tak, aby odrzucona część
-  obszaru ≈ „siła polan”. Polany kształtują rozkład, nie zmniejszają liczby
-  drzew (cel gęstości jest wyrównywany zagęszczeniem reszty obszaru).
-- **Heightmapa ASC**: próbkowanie dwuliniowe (wartości = środki komórek),
-  spadek metodą centralnej różnicy. Jeśli `xllcorner ≥ 100000`, ASC jest
-  traktowany jako w układzie z offsetem easting (konwencja TB) — automat.
-- **Determinizm**: to samo ziarno + te same wejścia = identyczny wynik.
+Every exported model must exist in the Terrain Builder project's **Template
+Library**. If Terrain Builder reports `Wrong file format or source template
+not found`, check the library against the model names in the TXT. The GUI's
+**Check models on P:\\** action and `forest-cli check-models` can compare
+project models with files on the DayZ work drive, including `plants`,
+`plants_bliss`, and `plants_sakhal`.
 
-## Struktura repo
+ASC and polygon coordinates are in map meters with the southwest corner as
+the origin. For an ASC heightmap using Terrain Builder coordinates,
+`xllcorner 200000` and `yllcorner 0` match the default offsets. The ASC
+parser detects a large easting, and GeoJSON/Shapefile polygon import removes
+the configured easting offset when its coordinates use that convention.
 
-```
-crates/forest-core    biblioteka: parsery, silnik, eksport (30 testów jednostkowych)
-crates/forest-gui     aplikacja eframe/egui
-crates/forest-cli     narzędzie wsadowe
-assets/samples/       przykładowa maska, ASC, GeoJSON, projekt
-```
+## How placement works
 
-## Testy
+- Mask pixels are matched to the nearest configured zone color within the
+  color tolerance; excluded colors have priority.
+- Density targets are based on source area in hectares and objects per
+  hectare. A seeded Poisson style sampler uses a shared spacing grid across
+  enabled sources. It makes up to five passes with a smaller spacing when
+  placement is constrained.
+- Clearings come from layered value noise. Heightmap samples and slope
+  calculations filter candidates; GeoJSON exclusions and satellite color
+  filters can reject them as well.
+- The same project inputs and seed produce the same generated placements.
+  Generation has a safety limit of **2,000,000 objects**.
+
+## Repository layout and tests
+
+| Path | Purpose |
+| --- | --- |
+| `crates/forest-core` | Parsers, project model, placement engine, and exporters |
+| `crates/forest-gui` | eframe/egui desktop application |
+| `crates/forest-cli` | Batch generation and validation |
+| `assets/samples` | Example project and map inputs |
 
 ```powershell
 cargo test -p forest-core
 ```
-
-## Uwagi
-
-- Limit bezpieczeństwa: 2 000 000 obiektów na jedno generowanie.
-- Pliki wyjściowe >100 MB są normalne dla gęstych lasów mapowych.
-- Współrzędne GeoJSON i Shapefile (`.shp`): metry mapy, origin SW; offset
-  easting jest usuwany automatycznie, gdy maks. X > 100 000.
