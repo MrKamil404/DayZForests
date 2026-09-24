@@ -525,6 +525,12 @@ const DICT: &[Entry] = &[
     ("Maks. spadek [°]", "Max. slope [°]", "Max. Neigung [°]"),
     ("Próbki kolorów:", "Color samples:", "Farbproben:"),
     ("Wyczyść", "Clear", "Löschen"),
+    ("Ignoruj te kolory", "Ignore these colors", "Diese Farben ignorieren"),
+    (
+        "Odwróć filtr: generuj na całym obszarze POZA tymi kolorami (np. wycinaj drogi/wodę z podkładu)",
+        "Invert filter: generate over the whole area EXCEPT these colors (e.g. cut roads/water from the backdrop)",
+        "Filter umkehren: auf der ganzen Fläche AUSSER diesen Farben generieren (z.B. Straßen/Wasser aus dem Hintergrund schneiden)",
+    ),
     ("Inne", "Other", "Andere"),
     ("Aktywny", "Active", "Aktiv"),
     ("Kopiuj z:", "Copy from:", "Kopieren von:"),

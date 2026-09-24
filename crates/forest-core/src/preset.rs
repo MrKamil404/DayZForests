@@ -53,7 +53,8 @@ pub struct CutZone {
 
 /// Inteligentne generowanie: filtr kolorów z warstwy satelitarnej.
 /// Drzewa powstają tylko tam, gdzie piksel podkładu pasuje do jednej
-/// z próbek (Manhattan <= tolerancja).
+/// z próbek (Manhattan <= tolerancja). Gdy `invert`, próbki są IGNOROWANE
+/// (wykluczane): drzewa powstają wszędzie indziej na obszarze.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ColorFilter {
     /// Próbki referencyjne (RGB) pobrane z podkładu.
@@ -61,6 +62,9 @@ pub struct ColorFilter {
     /// Tolerancja dopasowania (suma różnic kanałów).
     #[serde(default = "default_cf_tol")]
     pub tolerance: u32,
+    /// Ignoruj te kolory (odwróć filtr): generuj poza próbkami.
+    #[serde(default)]
+    pub invert: bool,
 }
 
 fn default_cf_tol() -> u32 {

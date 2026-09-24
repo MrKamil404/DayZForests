@@ -1805,6 +1805,11 @@ fn ui_color_filter_body(
             cf.samples.clear();
         }
     });
+    ui.checkbox(&mut cf.invert, tr(lang, "Ignoruj te kolory"))
+        .on_hover_text(tr(
+            lang,
+            "Odwróć filtr: generuj na całym obszarze POZA tymi kolorami (np. wycinaj drogi/wodę z podkładu)",
+        ));
 }
 
 // --- pola ustawień z indywidualnym przywracaniem domyślnych -------------------
@@ -5536,6 +5541,7 @@ ui.text_edit_singleline(&mut sp.label);
                                 let empty_cf = || forest_core::preset::ColorFilter {
                                     samples: Vec::new(),
                                     tolerance: 60,
+                                    invert: false,
                                 };
                                 let cf = if let Some(name) = mix_name.as_ref() {
                                     if let Some(pos) =

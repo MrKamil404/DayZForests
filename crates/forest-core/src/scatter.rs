@@ -567,6 +567,7 @@ fn sat_color_ok(
     y: f64,
     samples: &[Rgb8],
     tol: u32,
+    invert: bool,
 ) -> bool {
     if samples.is_empty() {
         return true;
@@ -579,12 +580,13 @@ fn sat_color_ok(
     let px_i = (fx.floor().max(0.0) as u32).min(s.width - 1);
     let py_i = (fy.floor().max(0.0) as u32).min(s.height - 1);
     let pc = s.pixel(px_i, py_i);
-    samples.iter().any(|sm| {
+    let matched = samples.iter().any(|sm| {
         (i32::from(pc.0[0]) - i32::from(sm.0[0])).unsigned_abs() as u32
             + (i32::from(pc.0[1]) - i32::from(sm.0[1])).unsigned_abs() as u32
             + (i32::from(pc.0[2]) - i32::from(sm.0[2])).unsigned_abs() as u32
             <= tol
-    })
+    });
+    if invert { !matched } else { matched }
 }
 
 fn perlin_pick(n: f64, shares: &[f32]) -> usize {
@@ -642,17 +644,17 @@ fn blend_mix_entries(entries: &[&MixEntry]) -> Option<(f32, Vec<(usize, f32)>)> 
     ))
 }
 
-fn area_color_for_entry(area_cf: Option<&crate::preset::ColorFilter>, e: Option<&MixEntry>) -> (Vec<Rgb8>, u32) {
+fn area_color_for_entry(area_cf: Option<&crate::preset::ColorFilter>, e: Option<&MixEntry>) -> (Vec<Rgb8>, u32, bool) {
     if let Some(e) = e {
         if let Some(cf) = e.color_filter.as_ref() {
             if !cf.samples.is_empty() {
-                return (cf.samples.clone(), cf.tolerance);
+                return (cf.samples.clone(), cf.tolerance, cf.invert);
             }
         }
     }
     area_cf
-        .map(|f| (f.samples.clone(), f.tolerance))
-        .unwrap_or_else(|| (Vec::new(), 0))
+        .map(|f| (f.samples.clone(), f.tolerance, f.invert))
+        .unwrap_or_else(|| (Vec::new(), 0, false))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -676,6 +678,7 @@ fn push_area_interior_job<'a>(
     size: f64,
     cf_samples: Vec<Rgb8>,
     cf_tol: u32,
+    cf_invert: bool,
     perlin: Option<(usize, Vec<f32>, f64, u64)>,
 ) {
     if species_weights.is_empty() || density_per_ha <= 0.0 {
@@ -719,7 +722,7 @@ fn push_area_interior_job<'a>(
                             }
                         }
                     }
-                    if !sat_color_ok(sat, size, x, y, &cf_samples, cf_tol) {
+                    if !sat_color_ok(sat, size, x, y, &cf_samples, cf_tol, cf_invert) {
                         continue;
                     }
                     return Some((x, y));
@@ -1125,7 +1128,7 @@ pub fn generate(
                     } else {
                         1.0 / mixing.len() as f64
                     };
-                    let (cf_samples, cf_tol) =
+                    let (cf_samples, cf_tol, cf_invert) =
                         area_color_for_entry(area.color_filter.as_ref(), Some(e));
                     let perlin = if use_perlin {
                         Some((mi, shares.clone(), scale, mix_seed))
@@ -1152,11 +1155,12 @@ pub fn generate(
                         size,
                         cf_samples,
                         cf_tol,
+                        cf_invert,
                         perlin,
                     );
                 }
                 if let Some((dens, weights)) = blend_mix_entries(&standard) {
-                    let (cf_samples, cf_tol) =
+                    let (cf_samples, cf_tol, cf_invert) =
                         area_color_for_entry(area.color_filter.as_ref(), None);
                     push_area_interior_job(
                         &mut jobs_per_area[ai],
@@ -1178,6 +1182,7 @@ pub fn generate(
                         size,
                         cf_samples,
                         cf_tol,
+                        cf_invert,
                         None,
                     );
                 }
@@ -1185,7 +1190,7 @@ pub fn generate(
                 if area.species_weights.is_empty() || area.density_per_ha <= 0.0 {
                     continue;
                 }
-                let (cf_samples, cf_tol) =
+                let (cf_samples, cf_tol, cf_invert) =
                     area_color_for_entry(area.color_filter.as_ref(), None);
                 push_area_interior_job(
                     &mut jobs_per_area[ai],
@@ -1207,6 +1212,7 @@ pub fn generate(
                     size,
                     cf_samples,
                     cf_tol,
+                    cf_invert,
                     None,
                 );
             }
@@ -1362,6 +1368,11 @@ pub fn generate(
                 );
 
                 // inteligentne generowanie: filtr kolorów podkładu (także dla granicy)
+                let cf_invert: bool = area
+                    .color_filter
+                    .as_ref()
+                    .map(|f| f.invert)
+                    .unwrap_or(false);
                 let cf_samples: Vec<Rgb8> = area
                     .color_filter
                     .as_ref()
@@ -1437,7 +1448,7 @@ pub fn generate(
                                 let s = (signed - w).abs();
                                 if s >= s_lo && s < s_hi {
                                     // inteligentne generowanie: piksel podkładu musi
-                                    // pasować do jednej z próbek
+                                    // pasować do próbek (albo ICH UNIKAĆ przy invert)
                                     if use_cf {
                                         let sat = sat_ref.unwrap();
                                         let fx = (x / size) * f64::from(sat.width);
@@ -1445,7 +1456,7 @@ pub fn generate(
                                         let px_i = (fx.floor().max(0.0) as u32).min(sat.width - 1);
                                         let py_i = (fy.floor().max(0.0) as u32).min(sat.height - 1);
                                         let pc = sat.pixel(px_i, py_i);
-                                        let ok = cf_samples.iter().any(|sm| {
+                                        let matched = cf_samples.iter().any(|sm| {
                                             (i32::from(pc.0[0]) - i32::from(sm.0[0])).unsigned_abs()
                                                 as u32
                                                 + (i32::from(pc.0[1]) - i32::from(sm.0[1]))
@@ -1456,6 +1467,7 @@ pub fn generate(
                                                     as u32
                                                 <= cf_tol
                                         });
+                                        let ok = if cf_invert { !matched } else { matched };
                                         if !ok {
                                             continue;
                                         }
@@ -2654,6 +2666,7 @@ mod tests {
             color_filter: Some(crate::preset::ColorFilter {
                 samples: vec![green],
                 tolerance: 40,
+                invert: false,
             }),
             holes: Vec::new(),
          cutting: false,
@@ -2689,6 +2702,52 @@ mod tests {
         });
         let (objs2, _) = generate(&proj2, None, Some(&sat), None, None, &|_| {}).unwrap();
         assert!(objs2.iter().any(|o| o.x > 600.0));
+    }
+
+    #[test]
+    fn sat_color_filter_invert_excludes_samples() {
+        // ten sam układ co sat_color_filter_gates_generation, ale invert:
+        // próbka zieleni jest IGNOROWANA — drzewa tylko na szarym polu
+        let green = Rgb8([60, 140, 60]);
+        let gray = Rgb8([180, 180, 180]);
+        let mut img = image::RgbaImage::new(100, 100);
+        for y in 0..100u32 {
+            for x in 0..100u32 {
+                let c = if x < 50 { green } else { gray };
+                img.put_pixel(x, y, image::Rgba([c.r(), c.g(), c.b(), 255]));
+            }
+        }
+        let sat = MaskImage::from_dynamic(image::DynamicImage::ImageRgba8(img));
+
+        let mut proj = zone_project(&[]);
+        proj.zones.clear();
+        proj.use_mask_zones = false;
+        proj.use_areas = true;
+        proj.edges.jagged_m = 0.0;
+        proj.areas.push(AreaDef {
+            enabled: true,
+            label: "Ignoruj zielen".into(),
+            density_per_ha: 200.0,
+            species_weights: vec![(0, 1.0)],
+            polygon: square_ring(50.0, 50.0, 950.0, 950.0),
+            preset_mix: Vec::new(),
+            edges: None,
+            color_filter: Some(crate::preset::ColorFilter {
+                samples: vec![green],
+                tolerance: 40,
+                invert: true,
+            }),
+            holes: Vec::new(),
+         cutting: false,
+            ..Default::default()
+        });
+
+        let (objs, stats) =
+            generate(&proj, None, Some(&sat), None, None, &|_| {}).unwrap();
+        assert!(stats.total > 300, "total={}", stats.total);
+        for o in &objs {
+            assert!(o.x > 490.0, "obiekt na ignorowanej zieleni x={}", o.x);
+        }
     }
 
     #[test]
@@ -2817,6 +2876,7 @@ mod tests {
                     color_filter: Some(crate::preset::ColorFilter {
                         samples: vec![green],
                         tolerance: 40,
+                        invert: false,
                     }),
                 },
                 MixEntry {
@@ -2828,6 +2888,7 @@ mod tests {
                     color_filter: Some(crate::preset::ColorFilter {
                         samples: vec![brown],
                         tolerance: 40,
+                        invert: false,
                     }),
                 },
             ],
